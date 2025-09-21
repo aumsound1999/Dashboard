@@ -1,416 +1,450 @@
 # app.py
+# Shopee ROAS Dashboard — overview • channel • compare
+# Data is read from a Google Sheet (CSV export) provided via Secrets:
+#   ROAS_CSV_URL = "https://docs.google.com/spreadsheets/d/<ID>/gviz/tq?tqx=out:csv&sheet=<SHEET_NAME>"
+#
+# Install (requirements.txt):
+#   streamlit
+#   pandas
+#   numpy
+#   plotly
+#   requests
+
 import os, re, io
 import numpy as np
 import pandas as pd
 import streamlit as st
-import requests
-import plotly.graph_objects as go
 import plotly.express as px
+import plotly.graph_objects as go
+import requests
 from datetime import timedelta
 
-# -------------------- Streamlit base --------------------
-st.set_page_config(page_title="Shopee ROAS Dashboard", layout="wide")
+st.set_page_config(page_title="Shopee ROAS", layout="wide")
 
-# -------------------- Helpers (parse wide sheet) --------------------
-TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{1,2}\s+\d{1,2}:\d{1,2}$")  # e.g., D21 12:4
+# ============================================================================
+# Helpers: load + parse
+# ============================================================================
+
+TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{1,2}\s+\d{1,2}:\d{1,2}$")  # e.g., D21 12:45
+
 
 def is_time_col(col: str) -> bool:
-    s = str(col).strip()
-    if not s:
-        return False
-    return TIME_COL_PATTERN.match(s) is not None
+    return isinstance(col, str) and TIME_COL_PATTERN.match(col.strip()) is not None
 
-def parse_timestamp_from_header(hdr: str, year=None, month=None, tz="Asia/Bangkok") -> pd.Timestamp:
-    # "D21 12:4" -> day=21, hour=12, minute=4
+
+def parse_timestamp_from_header(hdr: str, tz: str = "Asia/Bangkok") -> pd.Timestamp:
+    """
+    "D21 12:4" -> day=21, hour=12, minute=4 ; year/month จากปัจจุบัน
+    """
     m = re.match(r"^[A-Z](\d{1,2})\s+(\d{1,2}):(\d{1,2})$", hdr.strip())
     if not m:
         return pd.NaT
     d, hh, mm = map(int, m.groups())
     now = pd.Timestamp.now(tz=tz)
-    if year is None: year = now.year
-    if month is None: month = now.month
     try:
-        return pd.Timestamp(year=year, month=month, day=d, hour=hh, minute=mm, tz=tz)
+        ts = pd.Timestamp(year=now.year, month=now.month, day=d, hour=hh, minute=mm, tz=tz)
     except Exception:
-        return pd.NaT
+        ts = pd.NaT
+    return ts
 
-def parse_metrics_c_style(s: str):
+
+def parse_metrics_cell(s: str):
     """
-    ค่าที่อยู่ในแต่ละ cell ของคอลัมน์เวลา (เช่น 'D21 12:04') เป็น comma numbers
-    โดยนิยามใหม่ (ตามที่คุณต้องการใช้เป็นหัว):
-        index 0 -> sales
-        index 1 -> orders
-        index 2 -> ads
-        index 4 -> ads_ro   (ถ้ามี ไม่งั้น NaN)
-    ส่วน sale_ro จะไปคำนวณตอนรวม (sum(sales)/sum(ads))
-
-    รูปแบบจริงอาจมี 6-7 ตัว ก็จะหยิบตามตำแหน่งที่อธิบายไว้
+    รับค่าเป็นสตริงตัวเลขคั่นด้วยคอมมา -> list ความยาว 6 (เติม NaN ถ้าไม่ครบ)
+    ตัวอย่าง: "2025,12,34,776,22.51,1036"
     """
     if not isinstance(s, str):
-        return (np.nan, np.nan, np.nan, np.nan)
+        return [np.nan] * 6
     if not re.search(r"\d", s):
-        return (np.nan, np.nan, np.nan, np.nan)
-
+        return [np.nan] * 6
     s_clean = re.sub(r"[^0-9\.\-,]", "", s)
     parts = [p for p in s_clean.split(",") if p != ""]
     nums = []
-    for p in parts:
+    for p in parts[:6]:
         try:
             nums.append(float(p))
-        except:
+        except Exception:
             nums.append(np.nan)
+    while len(nums) < 6:
+        nums.append(np.nan)
+    return nums  # v0..v5
 
-    sales = nums[0] if len(nums) >= 1 else np.nan
-    orders = nums[1] if len(nums) >= 2 else np.nan
-    ads   = nums[2] if len(nums) >= 3 else np.nan
-    ads_ro = nums[4] if len(nums) >= 5 else np.nan  # บางกรณีไม่มี index 4
-    return (sales, orders, ads, ads_ro)
 
-def wide_to_long(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
-    """
-    แปลง wide sheet -> long:
-      - id: 'name'
-      - value: time columns (เช่น D21 12:04, D21 13:xx ...)
-      - metrics: sales, orders, ads, ads_ro (sale_ro ไปคำนวณตอนรวม)
-    """
-    cols = list(df_wide.columns)
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_csv_text():
+    url = os.environ.get("ROAS_CSV_URL", "")
+    if not url:
+        raise RuntimeError("Missing Secrets: ROAS_CSV_URL")
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    return r.text
+
+
+@st.cache_data(ttl=600, show_spinner=True)
+def load_wide_df():
+    text = fetch_csv_text()
+    df = pd.read_csv(io.StringIO(text))
+    return df
+
+
+def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
+    # หา id cols + time cols
     id_cols, time_cols = [], []
-    for c in cols:
+    for c in df_wide.columns:
         if str(c).strip().lower() == "name":
             id_cols.append(c)
-        elif is_time_col(c):
+        elif is_time_col(str(c)):
             time_cols.append(c)
-        else:
-            pass
-
     if not time_cols:
         raise ValueError("No time columns detected. Expect headers like 'D21 12:4'.")
 
-    melted = df_wide.melt(
-        id_vars=id_cols,
-        value_vars=time_cols,
-        var_name="time_col",
-        value_name="raw_metrics"
+    df_melt = df_wide.melt(
+        id_vars=id_cols, value_vars=time_cols,
+        var_name="time_col", value_name="raw"
     )
+    # timestamp
+    df_melt["timestamp"] = df_melt["time_col"].apply(lambda x: parse_timestamp_from_header(str(x), tz=tz))
 
-    melted["timestamp"] = melted["time_col"].apply(lambda x: parse_timestamp_from_header(x, tz=tz))
+    # metrics -> v0..v5
+    parsed = df_melt["raw"].apply(parse_metrics_cell)
+    V = pd.DataFrame(parsed.tolist(), columns=["v0", "v1", "v2", "v3", "v4", "v5"])
 
-    parsed = melted["raw_metrics"].apply(parse_metrics_c_style)
-    met = pd.DataFrame(parsed.tolist(), columns=["sales", "orders", "ads", "ads_ro"])
-
-    out = pd.concat([melted[["timestamp"] + id_cols], met], axis=1)
-    out.rename(columns={"name": "channel"}, inplace=True)
+    out = pd.concat([df_melt[["timestamp"] + id_cols], V], axis=1).rename(columns={"name": "channel"})
     out = out.dropna(subset=["timestamp"]).reset_index(drop=True)
 
-    for c in ["sales", "orders", "ads", "ads_ro"]:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
+    # ---- derive named metrics (แก้ mapping ตรงนี้ได้ถ้าข้อมูลคุณสลับตำแหน่ง) ----
+    out["sales"]  = pd.to_numeric(out["v0"], errors="coerce")  # 2025
+    out["orders"] = pd.to_numeric(out["v1"], errors="coerce")  # 12
+    out["ads"]    = pd.to_numeric(out["v2"], errors="coerce")  # 34 (ค่าโฆษณา/งบ)
+    out["view"]   = pd.to_numeric(out["v3"], errors="coerce")  # 776
+    out["ads_ro"] = pd.to_numeric(out["v4"], errors="coerce")  # 22.51 (ro ของ ads)
+    out["misc"]   = pd.to_numeric(out["v5"], errors="coerce")  # 1036 (อะไรก็ได้)
+
+    # ฟังก์ชันหลัก: sale_ro = sales/ads (ROAS รวม)
+    out["SaleRO"] = out["sales"] / out["ads"].replace(0, np.nan)
 
     return out
 
-# -------------------- Data source & cache --------------------
-@st.cache_data(ttl=600, show_spinner=False)  # 10 นาที
-def fetch_csv() -> pd.DataFrame:
-    url = os.environ.get("ROAS_CSV_URL", "").strip()
-    if not url:
-        raise RuntimeError("ROAS_CSV_URL is not set in Secrets.")
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    df = pd.read_csv(io.StringIO(r.text))
-    return df
 
 @st.cache_data(ttl=600, show_spinner=False)
-def build_long() -> pd.DataFrame:
-    df_wide = fetch_csv()
-    return wide_to_long(df_wide)
+def build_long(df_wide):
+    return long_from_wide(df_wide)
 
-def clear_all_cache():
-    fetch_csv.clear()
-    build_long.clear()
 
-# -------------------- Common utils --------------------
-def hourly_latest_snapshot(df: pd.DataFrame) -> pd.DataFrame:
-    d = df.copy()
-    d["hour"] = d["timestamp"].dt.floor("H")
-    idx = d.sort_values("timestamp").groupby(["channel", "hour"]).tail(1).index
-    return d.loc[idx].reset_index(drop=True)
+def pick_snapshot_at(df: pd.DataFrame, at_ts: pd.Timestamp) -> pd.DataFrame:
+    """เลือกแถวล่าสุดของแต่ละ channel ที่อยู่ในชั่วโมงเดียวกับ at_ts (floor ชั่วโมง)"""
+    if df.empty:
+        return df
+    tz = str(df["timestamp"].dt.tz)
+    target_hour = at_ts.tz_convert(tz).floor("H")
+    snap = (
+        df[df["timestamp"].dt.floor("H") == target_hour]
+        .sort_values("timestamp")
+        .groupby("channel")
+        .tail(1)
+    )
+    return snap
 
-def totals_from_df(df: pd.DataFrame):
-    t = {}
-    t["Sales"]  = df["sales"].sum()
-    t["Orders"] = df["orders"].sum()
-    t["Ads"]    = df["ads"].sum()
 
-    # ads_ro = mean เฉพาะค่าที่ > 0
-    pos = df["ads_ro"].dropna()
-    pos = pos[pos > 0]
-    t["ads_ro"] = pos.mean() if len(pos) else np.nan
+def current_and_yesterday_snapshots(df: pd.DataFrame):
+    if df.empty:
+        return df, df, pd.NaT
+    cur_ts = df["timestamp"].max()
+    cur_snap = pick_snapshot_at(df, cur_ts)
+    y_snap = pick_snapshot_at(df, cur_ts - pd.Timedelta(days=1))
+    return cur_snap, y_snap, cur_ts.floor("H")
 
-    # sale_ro = sum(sales)/sum(ads)
-    t["sale_ro"] = (t["Sales"] / t["Ads"]) if t["Ads"] else np.nan
-    return t
+
+def kpis_from_snapshot(snap: pd.DataFrame):
+    """รวมค่าแบบใหม่สำหรับหัว KPI"""
+    if snap.empty:
+        return dict(Sales=0, Orders=0, Ads=0, SaleRO=np.nan, AdsRO_avg=np.nan)
+
+    sales = snap["sales"].sum()
+    orders = snap["orders"].sum()
+    ads = snap["ads"].sum()
+    sale_ro = (sales / ads) if ads != 0 else np.nan
+    ads_ro_vals = snap["ads_ro"]
+    ads_ro_avg = ads_ro_vals[ads_ro_vals > 0].mean()
+    return dict(Sales=sales, Orders=orders, Ads=ads, SaleRO=sale_ro, AdsRO_avg=ads_ro_avg)
+
 
 def pct_delta(curr, prev):
-    if prev is None or np.isnan(prev) or prev == 0:
+    if prev in [0, None] or pd.isna(prev):
         return None
-    if curr is None or np.isnan(curr):
+    if curr is None or pd.isna(curr):
         return None
     return (curr - prev) * 100.0 / prev
 
-def metric_card(col, label, value, ref_value):
-    delta = pct_delta(value, ref_value)
-    if value is None or np.isnan(value):
-        val_txt = "-"
-    else:
-        # ขึ้นรูปแบบสวยๆ ถ้าเป็นอัตราเป็นทศนิยม 2 ตำแหน่ง
-        if label in ["ads_ro", "sale_ro"]:
-            val_txt = f"{value:,.2f}"
-        else:
-            val_txt = f"{value:,.0f}"
-    if delta is None:
-        col.metric(label, val_txt)
-    else:
-        col.metric(label, val_txt, f"{delta:+.1f}%")
 
-def default_date_range(df_hourly):
-    # ค่า default = 3 วันล่าสุด
-    if df_hourly.empty:
-        today = pd.Timestamp.now(tz="Asia/Bangkok").date()
-        return today - timedelta(days=2), today
-    max_day = df_hourly["hour"].max().date()
-    start = max_day - timedelta(days=2)
-    return start, max_day
+# ============================================================================
+# UI: Data refresh header (Reload only)
+# ============================================================================
 
-def overlay_dataset(df_hourly, start_date, end_date):
-    """
-    คืน dataframe สำหรับทำกราฟ overlay:
-    one row = (day, HH:MM, metric aggregates by day-hour)
-    """
-    d = df_hourly[(df_hourly["hour"].dt.date >= start_date) & (df_hourly["hour"].dt.date <= end_date)].copy()
-    if d.empty:
-        return pd.DataFrame()
+st.sidebar.header("Filters")
 
-    d["day"] = d["hour"].dt.date
-    d["hm"] = d["hour"].dt.strftime("%H:%M")
+# ปุ่มรีโหลด (ล้าง cache ทั้งหมด)
+col_top = st.columns([1, 3, 3])[0]
+with col_top:
+    if st.button("Reload", use_container_width=True):
+        fetch_csv_text.clear()
+        load_wide_df.clear()
+        build_long.clear()
+        st.experimental_rerun()
 
-    # aggregate per day/hour across channels:
-    g = d.groupby(["day", "hm"]).agg(
-        sales=("sales", "sum"),
-        orders=("orders", "sum"),
-        ads=("ads", "sum"),
-        ads_ro=("ads_ro", lambda s: s[s > 0].mean() if len(s.dropna()) else np.nan)
-    ).reset_index()
-
-    # คำนวณ sale_ro ต่อ hour: sum(sales)/sum(ads)
-    sale_sum = g.groupby(["day", "hm"])["sales"].transform("sum")
-    ads_sum = g.groupby(["day", "hm"])["ads"].transform("sum")
-    g["sale_ro"] = sale_sum / ads_sum.replace(0, np.nan)
-
-    return g.sort_values(["day", "hm"])
-
-# -------------------- Sidebar --------------------
-with st.sidebar:
-    st.header("Filters")
-    reload_btn = st.button("Reload", use_container_width=True)
-    if reload_btn:
-        clear_all_cache()
-        st.rerun()
-
-# -------------------- Load data --------------------
+# โหลดข้อมูล
 try:
-    df_long = build_long()
+    wide = load_wide_df()
+    df_long = build_long(wide)
 except Exception as e:
-    st.error(f"Load/parse error: {e}")
+    st.error(f"Parse failed: {e}")
+    st.dataframe(wide.head() if 'wide' in locals() else pd.DataFrame())
     st.stop()
 
-# Hourly snapshot (latest record in each hour per channel)
-df_hourly = hourly_latest_snapshot(df_long)
+tz = "Asia/Bangkok"
+now_ts = pd.Timestamp.now(tz=tz)
 
-# Default date range = 3 วันล่าสุด
-with st.sidebar:
-    s_default, e_default = default_date_range(df_hourly)
-    dr = st.date_input("Date range (default 3 days)", value=(s_default, e_default))
-    if isinstance(dr, (list, tuple)):
-        date_start, date_end = dr
-    else:
-        # กรณีเลือกวันเดียว
-        date_start, date_end = dr, dr
+# ============================================================================
+# Sidebar filters — default 3 days, Channels [All]
+# ============================================================================
 
-# Channel filter (เลือก "All" ไว้ให้): ใช้ใน Overview/Compare
-with st.sidebar:
-    channels_all = sorted(df_hourly["channel"].dropna().unique().tolist())
-    sel = st.multiselect("Channels (เลือก All ได้)", options=["[All]"] + channels_all, default=["[All]"])
-    if "[All]" in sel:
-        selected_channels = channels_all
-    else:
-        selected_channels = sel
+min_ts = df_long["timestamp"].min()
+max_ts = df_long["timestamp"].max()
 
-# -------------------- Page router --------------------
-with st.sidebar:
-    page = st.radio("Page", ["Overview", "Channel", "Compare"])
+date_max = max_ts.date()
+date_min_default = (max_ts - pd.Timedelta(days=2)).date()
 
-st.title("Shopee ROAS Dashboard")
-st.caption(f"Last refresh: {pd.Timestamp.now(tz='Asia/Bangkok').strftime('%Y-%m-%d %H:%M:%S')}")
+d1, d2 = st.sidebar.date_input(
+    "Date range (default 3 days)",
+    value=(date_min_default, date_max),
+    min_value=min_ts.date(),
+    max_value=date_max,
+)
+if isinstance(d1, (list, tuple)):
+    d1, d2 = d1
+start_ts = pd.Timestamp.combine(d1, pd.Timestamp("00:00").time()).tz_localize(tz)
+end_ts   = pd.Timestamp.combine(d2, pd.Timestamp("23:59").time()).tz_localize(tz)
 
-# -------------------- KPI header (common function) --------------------
-def render_kpi_header(df_hourly_scope):
-    # scope = ช่วงวัน + ช่องที่เลือก + hourly latest snapshot
-    today_mask = (df_hourly_scope["hour"].dt.date >= date_start) & (df_hourly_scope["hour"].dt.date <= date_end)
-    curr = df_hourly_scope.loc[today_mask].copy()
-
-    # baseline = เมื่อวานช่วงเดียวกัน
-    y_start = (pd.Timestamp(date_start) - timedelta(days=1)).date()
-    y_end   = (pd.Timestamp(date_end)   - timedelta(days=1)).date()
-    base_mask = (df_hourly_scope["hour"].dt.date >= y_start) & (df_hourly_scope["hour"].dt.date <= y_end)
-    base = df_hourly_scope.loc[base_mask].copy()
-
-    curr_tot = totals_from_df(curr) if not curr.empty else {}
-    base_tot = totals_from_df(base) if not base.empty else {}
-
-    cols = st.columns(5)
-    metric_card(cols[0], "Sales",  curr_tot.get("Sales", np.nan),  base_tot.get("Sales", np.nan))
-    metric_card(cols[1], "Orders", curr_tot.get("Orders", np.nan), base_tot.get("Orders", np.nan))
-    metric_card(cols[2], "Ads",    curr_tot.get("Ads", np.nan),    base_tot.get("Ads", np.nan))
-    metric_card(cols[3], "ads_ro", curr_tot.get("ads_ro", np.nan), base_tot.get("ads_ro", np.nan))
-    metric_card(cols[4], "sale_ro",curr_tot.get("sale_ro", np.nan),base_tot.get("sale_ro", np.nan))
-
-# -------------------- OVERVIEW --------------------
-if page == "Overview":
-    scope = df_hourly[df_hourly["channel"].isin(selected_channels)].copy()
-
-    st.subheader("Overview (All selected channels)")
-    render_kpi_header(scope)
-
-    # ---------- Overlay chart ----------
-    st.markdown("### Trend overlay by day")
-    overlay = overlay_dataset(scope, date_start, date_end)
-    metric_label = st.selectbox(
-        "Metric to plot (เลือกได้ 1 ค่า)",
-        options=["Sales", "Orders", "Ads", "ads_ro", "sale_ro"],
-        index=0
-    )
-    key_map = {"Sales":"sales","Orders":"orders","Ads":"ads","ads_ro":"ads_ro","sale_ro":"sale_ro"}
-
-    if overlay.empty:
-        st.info("No data for the selected filters/dates.")
-    else:
-        fig = go.Figure()
-        for day, sub in overlay.groupby("day"):
-            fig.add_trace(go.Scatter(
-                x=sub["hm"], y=sub[key_map[metric_label]],
-                mode="lines+markers", name=str(day)
-            ))
-        fig.update_layout(
-            xaxis_title="Time (HH:MM)",
-            yaxis_title=metric_label,
-            legend=dict(orientation="h", y=-0.25),
-            height=420
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        # ---------- Table (same data as chart) ----------
-        st.markdown("### Data (hourly latest snapshot aggregated)")
-        show_cols = ["day","hm","sales","orders","ads","ads_ro","sale_ro"]
-        t = overlay[show_cols].copy()
-        try:
-            import matplotlib  # need for background_gradient
-            sty = t.style.background_gradient(subset=["sales","orders","ads","ads_ro","sale_ro"])
-            st.dataframe(sty, use_container_width=True, height=380)
-        except Exception:
-            st.dataframe(t, use_container_width=True, height=380)
-
-# -------------------- CHANNEL --------------------
-elif page == "Channel":
-    st.subheader("Channel")
-    # ให้เลือกได้จาก "ทุกช่องในชีต" ต่อให้ sidebar ไม่ได้เลือก
-    chan = st.selectbox("Pick one channel", options=sorted(df_hourly["channel"].unique()))
-    scope = df_hourly[df_hourly["channel"] == chan].copy()
-
-    render_kpi_header(scope)
-
-    st.markdown("### Trend overlay by day (channel)")
-    overlay = overlay_dataset(scope, date_start, date_end)
-    metric_label = st.selectbox(
-        "Metric to plot (เลือกได้ 1 ค่า)", options=["Sales","Orders","Ads","ads_ro","sale_ro"], index=0, key="ch_metric"
-    )
-    key_map = {"Sales":"sales","Orders":"orders","Ads":"ads","ads_ro":"ads_ro","sale_ro":"sale_ro"}
-
-    if overlay.empty:
-        st.info("No data for the selected range.")
-    else:
-        fig = go.Figure()
-        for day, sub in overlay.groupby("day"):
-            fig.add_trace(go.Scatter(
-                x=sub["hm"], y=sub[key_map[metric_label]],
-                mode="lines+markers", name=str(day)
-            ))
-        fig.update_layout(
-            xaxis_title="Time (HH:MM)",
-            yaxis_title=metric_label,
-            legend=dict(orientation="h", y=-0.25),
-            height=420
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("### Data (hourly latest snapshot aggregated)")
-        show_cols = ["day","hm","sales","orders","ads","ads_ro","sale_ro"]
-        t = overlay[show_cols].copy()
-        try:
-            import matplotlib
-            sty = t.style.background_gradient(subset=["sales","orders","ads","ads_ro","sale_ro"])
-            st.dataframe(sty, use_container_width=True, height=380)
-        except Exception:
-            st.dataframe(t, use_container_width=True, height=380)
-
-# -------------------- COMPARE --------------------
+# Channels with [All]
+all_channels = sorted(df_long["channel"].dropna().unique().tolist())
+chan_options = ["[All]"] + all_channels
+chosen = st.sidebar.multiselect("Channels (เลือก All ได้)", options=chan_options, default=["[All]"])
+if ("[All]" in chosen) or (not any(c in all_channels for c in chosen)):
+    selected_channels = all_channels
 else:
-    st.subheader("Compare channels")
-    pick = st.multiselect("Pick 2–4 channels", options=sorted(df_hourly["channel"].unique()), default=sorted(df_hourly["channel"].unique())[:2])
+    selected_channels = [c for c in chosen if c in all_channels]
+
+page = st.sidebar.radio("Page", ["Overview", "Channel", "Compare"])
+
+# กรองช่วงวันที่ + ช่อง (ใช้ d สำหรับกราฟ/ตารางที่ต้องการช่วง)
+mask = (
+    (df_long["timestamp"] >= start_ts)
+    & (df_long["timestamp"] <= end_ts)
+    & (df_long["channel"].isin(selected_channels))
+)
+d = df_long.loc[mask].copy()
+
+# แสดงหัวเรื่อง + last refresh
+st.title("Shopee ROAS Dashboard")
+st.caption(f"Last refresh: {now_ts.strftime('%Y-%m-%d %H:%M:%S')}")
+
+# ============================================================================
+# Overview
+# ============================================================================
+if page == "Overview":
+    st.subheader("Overview (All selected channels)")
+    if d.empty:
+        st.warning("No data in selected period.")
+        st.stop()
+
+    # สแนปช็อตล่าสุด และเมื่อวานเวลาเดียวกัน
+    cur_snap, y_snap, cur_hour = current_and_yesterday_snapshots(d)
+    cur = kpis_from_snapshot(cur_snap)
+    prev = kpis_from_snapshot(y_snap)
+
+    C = st.columns(5)
+    C[0].metric("Sales", f"{cur['Sales']:,.0f}",
+                delta=(f"{pct_delta(cur['Sales'], prev['Sales']):+.1f}%" if prev['Sales'] else None))
+    C[1].metric("Orders", f"{cur['Orders']:,.0f}",
+                delta=(f"{pct_delta(cur['Orders'], prev['Orders']):+.1f}%" if prev['Orders'] else None))
+    C[2].metric("Budget (Ads)", f"{cur['Ads']:,.0f}",
+                delta=(f"{pct_delta(cur['Ads'], prev['Ads']):+.1f}%" if prev['Ads'] else None))
+    C[3].metric("sale_ro (Sales/Ads)",
+                "-" if pd.isna(cur["SaleRO"]) else f"{cur['SaleRO']:.3f}",
+                delta=(f"{pct_delta(cur['SaleRO'], prev['SaleRO']):+.1f}%" if not pd.isna(prev["SaleRO"]) else None))
+    C[4].metric("ads_ro (avg>0)",
+                "-" if pd.isna(cur["AdsRO_avg"]) else f"{cur['AdsRO_avg']:.2f}",
+                delta=(f"{pct_delta(cur['AdsRO_avg'], prev['AdsRO_avg']):+.1f}%" if not pd.isna(prev["AdsRO_avg"]) else None))
+    st.caption(f"Snapshot hour: {cur_hour}")
+
+    # ===== Trend by hour (Sales/Orders/ROAS) =====
+    # เลือกสแนปช็อตล่าสุดของแต่ละชั่วโมง/ช่อง
+    tmp = d.copy()
+    tmp["hour"] = tmp["timestamp"].dt.floor("H")
+    idx = tmp.sort_values("timestamp").groupby(["channel", "hour"]).tail(1).index
+    hourly = tmp.loc[idx].copy()
+
+    trend = hourly.groupby("hour").agg(
+        sales=("sales", "sum"),
+        orders=("orders", "sum"),
+        ads=("ads", "sum")
+    ).reset_index()
+    trend["ROAS"] = trend["sales"] / trend["ads"].replace(0, np.nan)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=trend["hour"], y=trend["sales"], name="Sales", mode="lines+markers"))
+    fig.add_trace(go.Scatter(x=trend["hour"], y=trend["orders"], name="Orders", mode="lines+markers", yaxis="y2"))
+    fig.add_trace(go.Scatter(x=trend["hour"], y=trend["ROAS"], name="ROAS", mode="lines+markers", yaxis="y3"))
+    fig.update_layout(
+        height=380,
+        xaxis_title="Hour",
+        yaxis=dict(title="Sales"),
+        yaxis2=dict(title="Orders", overlaying="y", side="right"),
+        yaxis3=dict(title="ROAS", overlaying="y", side="right", position=1.0),
+        legend=dict(orientation="h", y=-0.25),
+    )
+    st.markdown("#### Trend by hour (Sales/Orders/ROAS)")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ===== Heatmap prime hours =====
+    st.markdown("#### Prime hours heatmap")
+    tmp = hourly.copy()
+    tmp["day"] = tmp["hour"].dt.date
+    tmp["h"] = tmp["hour"].dt.hour
+    heat = tmp.groupby(["day", "h"]).agg(val=("sales", "sum")).reset_index()
+    pivot = heat.pivot(index="day", columns="h", values="val").sort_index(ascending=False)
+    fig_h = px.imshow(pivot, aspect="auto", labels=dict(x="Hour", y="Day", color="Sales"))
+    st.plotly_chart(fig_h, use_container_width=True)
+
+    # ===== Raw table (hourly latest snapshot per channel) =====
+    st.markdown("#### Data (hourly latest snapshot per channel)")
+    show = hourly[["hour", "channel", "ads", "orders", "sales", "SaleRO", "ads_ro"]].rename(
+        columns={"ads": "budget(ads)"}
+    ).sort_values(["hour", "channel"])
+    st.dataframe(show.round(3), use_container_width=True, height=360)
+
+# ============================================================================
+# Channel
+# ============================================================================
+elif page == "Channel":
+    # ให้เลือกจากรายชื่อช่องทั้งหมด (ไม่ผูกกับตัวกรองด้านซ้าย)
+    ch = st.selectbox("Pick one channel", options=all_channels, index=0)
+    ch_df = df_long[
+        (df_long["channel"] == ch)
+        & (df_long["timestamp"] >= start_ts)
+        & (df_long["timestamp"] <= end_ts)
+    ].copy()
+    if ch_df.empty:
+        st.warning("No data for this channel in selected period.")
+        st.stop()
+
+    cur_snap, y_snap, cur_hour = current_and_yesterday_snapshots(ch_df)
+    cur = kpis_from_snapshot(cur_snap)
+    prev = kpis_from_snapshot(y_snap)
+
+    C = st.columns(5)
+    C[0].metric("Sales", f"{cur['Sales']:,.0f}",
+                delta=(f"{pct_delta(cur['Sales'], prev['Sales']):+.1f}%" if prev['Sales'] else None))
+    C[1].metric("Orders", f"{cur['Orders']:,.0f}",
+                delta=(f"{pct_delta(cur['Orders'], prev['Orders']):+.1f}%" if prev['Orders'] else None))
+    C[2].metric("Budget (Ads)", f"{cur['Ads']:,.0f}",
+                delta=(f"{pct_delta(cur['Ads'], prev['Ads']):+.1f}%" if prev['Ads'] else None))
+    C[3].metric("sale_ro (Sales/Ads)",
+                "-" if pd.isna(cur["SaleRO"]) else f"{cur['SaleRO']:.3f}",
+                delta=(f"{pct_delta(cur['SaleRO'], prev['SaleRO']):+.1f}%" if not pd.isna(prev["SaleRO"]) else None))
+    C[4].metric("ads_ro (avg>0)",
+                "-" if pd.isna(cur["AdsRO_avg"]) else f"{cur['AdsRO_avg']:.2f}",
+                delta=(f"{pct_delta(cur['AdsRO_avg'], prev['AdsRO_avg']):+.1f}%" if not pd.isna(prev["AdsRO_avg"]) else None))
+    st.caption(f"Snapshot hour: {cur_hour}")
+
+    # line หลายแกนสำหรับช่องเดียว
+    tmp = ch_df.copy()
+    tmp["hour"] = tmp["timestamp"].dt.floor("H")
+    idx = tmp.sort_values("timestamp").groupby("hour").tail(1).index
+    ch_hourly = tmp.loc[idx].sort_values("hour")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=ch_hourly["hour"], y=ch_hourly["sales"], name="Sales", mode="lines+markers"))
+    fig.add_trace(go.Scatter(x=ch_hourly["hour"], y=ch_hourly["orders"], name="Orders", mode="lines+markers", yaxis="y2"))
+    fig.add_trace(go.Scatter(x=ch_hourly["hour"], y=ch_hourly["ads"], name="Ads", mode="lines+markers", yaxis="y3"))
+    fig.add_trace(go.Scatter(x=ch_hourly["hour"], y=ch_hourly["SaleRO"], name="sale_ro", mode="lines+markers", yaxis="y4"))
+    fig.update_layout(
+        height=420,
+        xaxis_title="Hour",
+        yaxis=dict(title="Sales"),
+        yaxis2=dict(title="Orders", overlaying="y", side="right"),
+        yaxis3=dict(title="Ads", overlaying="y", side="right", position=1.0),
+        yaxis4=dict(title="sale_ro", overlaying="y", side="right", position=0.95),
+        legend=dict(orientation="h", y=-0.28),
+    )
+    st.markdown("#### Multi-axis line")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ตารางต่อชั่วโมงของช่องเดียว
+    st.markdown("#### Time series table")
+    st.dataframe(
+        ch_hourly[["hour", "ads", "orders", "sales", "SaleRO", "ads_ro"]]
+        .rename(columns={"ads": "budget(ads)"})
+        .round(3),
+        use_container_width=True,
+        height=360,
+    )
+
+# ============================================================================
+# Compare
+# ============================================================================
+else:
+    pick = st.multiselect("Pick 2–4 channels", options=all_channels, default=all_channels[:2], max_selections=4)
     if len(pick) < 2:
         st.info("Please pick at least 2 channels.")
         st.stop()
 
-    sub = df_hourly[df_hourly["channel"].isin(pick)].copy()
-    m = sub[(sub["hour"].dt.date >= date_start) & (sub["hour"].dt.date <= date_end)]
+    sub = df_long[
+        (df_long["channel"].isin(pick))
+        & (df_long["timestamp"] >= start_ts)
+        & (df_long["timestamp"] <= end_ts)
+    ].copy()
+    if sub.empty:
+        st.warning("No data for selected channels in range.")
+        st.stop()
 
-    # KPI table by channel (mean/ratio)
-    def _kpi_df(x):
-        t = totals_from_df(x)
-        return pd.Series({
-            "Sales": t["Sales"],
-            "Orders": t["Orders"],
-            "Ads": t["Ads"],
-            "ads_ro": t["ads_ro"],
-            "sale_ro": t["sale_ro"],
-        })
+    # สแนปช็อตล่าสุดต่อชั่วโมง/ช่อง
+    tmp = sub.copy()
+    tmp["hour"] = tmp["timestamp"].dt.floor("H")
+    idx = tmp.sort_values("timestamp").groupby(["channel", "hour"]).tail(1).index
+    hourly = tmp.loc[idx]
 
-    tbl = m.groupby("channel").apply(_kpi_df).reset_index()
-    st.markdown("### KPI comparison table")
-    try:
-        import matplotlib
-        st.dataframe(tbl.style.background_gradient(subset=["Sales","Orders","Ads","ads_ro","sale_ro"]),
-                     use_container_width=True)
-    except Exception:
-        st.dataframe(tbl, use_container_width=True)
+    st.subheader(f"Compare: {', '.join(pick)}")
 
-    # Overlay chart (เลือก metric 1 ค่า)
-    st.markdown("### Trend overlay by day")
-    metric_label = st.selectbox("Metric", ["Sales","Orders","Ads","ads_ro","sale_ro"], index=0, key="cmp_metric")
-    key_map = {"Sales":"sales","Orders":"orders","Ads":"ads","ads_ro":"ads_ro","sale_ro":"sale_ro"}
+    # ตาราง KPI เฉลี่ย
+    kpis = hourly.groupby("channel").agg(
+        ROAS=("SaleRO", "mean"),
+        AOV=("sales", lambda s: (s.sum() / hourly.loc[s.index, "orders"].sum()) if hourly.loc[s.index, "orders"].sum() else np.nan),
+        CPO=("orders", lambda s: (hourly.loc[s.index, "ads"].sum() / s.sum()) if s.sum() else np.nan),
+        RPV=("sales", lambda s: (s.sum() / hourly.loc[s.index, "view"].sum()) if hourly.loc[s.index, "view"].sum() else np.nan),
+        ORV=("orders", lambda s: (s.sum() / hourly.loc[s.index, "view"].sum()) if hourly.loc[s.index, "view"].sum() else np.nan),
+    ).reset_index()
+    st.markdown("#### KPI comparison table")
+    st.dataframe(kpis.round(3), use_container_width=True)
+
+    base = st.selectbox("Baseline channel", options=pick, index=0)
+    met = st.selectbox("Metric", options=["ROAS", "sales", "orders", "ads"], index=0)
+
+    piv = hourly.pivot_table(index="hour", columns="channel", values=("SaleRO" if met == "ROAS" else met), aggfunc="sum").sort_index()
+    rel = (piv.div(piv[base], axis=0) - 1.0) * 100.0
 
     fig = go.Figure()
-    for ch in pick:
-        ch_scope = m[m["channel"] == ch]
-        ov = overlay_dataset(ch_scope, date_start, date_end)
-        for day, subd in ov.groupby("day"):
-            fig.add_trace(go.Scatter(
-                x=subd["hm"], y=subd[key_map[metric_label]],
-                mode="lines+markers", name=f"{ch} • {day}"
-            ))
-
-    fig.update_layout(
-        xaxis_title="Time (HH:MM)",
-        yaxis_title=metric_label,
-        height=440,
-        legend=dict(orientation="h", y=-0.25)
-    )
+    for c in rel.columns:
+        if c == base:
+            continue
+        fig.add_trace(go.Scatter(x=rel.index, y=rel[c], name=f"{c} vs {base}", mode="lines+markers"))
+    fig.update_layout(height=420, xaxis_title="Hour", yaxis_title="% difference", legend=dict(orientation="h", y=-0.28))
     st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("#### Small multiples (ROAS)")
+    sm = hourly.pivot_table(index="hour", columns="channel", values="SaleRO", aggfunc="mean").sort_index()
+    fig2 = go.Figure()
+    for c in sm.columns:
+        fig2.add_trace(go.Scatter(x=sm.index, y=sm[c], name=c, mode="lines"))
+    fig2.update_layout(height=360, legend=dict(orientation="h", y=-0.28))
+    st.plotly_chart(fig2, use_container_width=True)
