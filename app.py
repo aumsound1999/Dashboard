@@ -114,46 +114,53 @@ def build_long(df_wide: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 def build_hourly(df_long: pd.DataFrame) -> pd.DataFrame:
     """เลือก snapshot ล่าสุดของแต่ละชั่วโมง/ช่อง และคำนวณค่า 'ต่างชั่วโมง' ภายในวัน"""
-    if df_long.empty: return df_long.copy()
+    if df_long.empty:
+        return df_long.copy()
 
-    df = df_long.copy()
-    df["hour_key"] = df["timestamp"].dt.floor("H")
-    # last snapshot per (channel,hour_key)
-    idx = df.sort_values("timestamp").groupby(["channel","hour_key"]).tail(1).index
-    h = df.loc[idx].copy()
-    h["day"]  = h["hour_key"].dt.date
+    h = df_long.copy()
+    h["hour_key"] = h["timestamp"].dt.floor("H")
+
+    # เลือก snapshot ล่าสุดของทุก (channel, hour_key)
+    idx = h.sort_values("timestamp").groupby(["channel", "hour_key"]).tail(1).index
+    h = h.loc[idx].copy()
+
+    # ช่วยสำหรับกรุ๊ปภายในวัน
+    h["day"] = h["hour_key"].dt.date
     h["hour"] = h["hour_key"].dt.hour
+    h = h.sort_values(["channel", "day", "hour_key"])
 
-    # sort for diff
-    h = h.sort_values(["channel","day","hour_key"])
+    # ให้แน่ใจว่าเป็นตัวเลข
+    for c in ["sales_cum", "orders_cum", "ads_cum", "sales_from_ads_cum"]:
+        if c in h.columns:
+            h[c] = pd.to_numeric(h[c], errors="coerce")
 
-    # within each (channel, day), compute hour-over-hour
-    def _diff_clip(g, col):
-        d = g[col].diff()
-        d = d.fillna(0)
-        return d.clip(lower=0)  # ไม่ให้ติดลบ
+    # diff แบบ index-align ด้วย groupby(...)[col].diff()
+    def _diff_nonneg(colname, outname):
+        if colname not in h.columns:
+            h[outname] = 0.0
+            return
+        d = h.groupby(["channel", "day"], sort=False)[colname].diff()
+        d = d.fillna(0).clip(lower=0)
+        h[outname] = d
 
-    for col_cum, col_hour in [
-        ("sales_cum",  "sales_hour"),
-        ("orders_cum", "orders_hour"),
-        ("ads_cum",    "ads_hour"),
-        ("sales_from_ads_cum", "sales_ads_hour")
-    ]:
-        h[col_hour] = h.groupby(["channel","day"], group_keys=False).apply(_diff_clip, col_cum)
+    _diff_nonneg("sales_cum",  "sales_hour")
+    _diff_nonneg("orders_cum", "orders_hour")
+    _diff_nonneg("ads_cum",    "ads_hour")
+    _diff_nonneg("sales_from_ads_cum", "sales_ads_hour")
 
-    # ROAS รายชั่วโมง (จำกัดบน 50)
-    # sale_ro_hour = sales_hour / ads_hour
-    with np.errstate(divide='ignore', invalid='ignore'):
-        h["sale_ro_hour"] = np.where(h["ads_hour"]>0, h["sales_hour"]/h["ads_hour"], np.nan)
+    # ROAS รายชั่วโมง (limit 50)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        h["sale_ro_hour"] = np.where(h["ads_hour"] > 0, h["sales_hour"] / h["ads_hour"], np.nan)
 
-        # ads_ro_hour = sales_from_ads_hour / ads_hour (ถ้าไม่มี sales_from_ads_cum ให้ fallback เป็น sales_hour)
+        # ถ้าไม่มียอดขายจากแอด ให้ fallback เป็นยอดขายรวมรายชั่วโมง
         base_sales_ads = np.where(h["sales_ads_hour"].notna(), h["sales_ads_hour"], h["sales_hour"])
-        h["ads_ro_hour"]  = np.where(h["ads_hour"]>0, base_sales_ads/h["ads_hour"], np.nan)
+        h["ads_ro_hour"] = np.where(h["ads_hour"] > 0, base_sales_ads / h["ads_hour"], np.nan)
 
     h["sale_ro_hour"] = h["sale_ro_hour"].clip(upper=50)
     h["ads_ro_hour"]  = h["ads_ro_hour"].clip(upper=50)
 
     return h
+
 
 # -----------------------------------------------------------------------------
 # KPI helpers
