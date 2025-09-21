@@ -118,30 +118,66 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
     out["ORV"]  = out["order"] / out["view"].replace(0, np.nan)
     return out
 
+def _fetch_csv(url: str) -> pd.DataFrame:
+    import requests, io
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    return pd.read_csv(io.StringIO(r.text))
+
 def load_data_from_sidebar():
     st.sidebar.header("Data source")
     default_url = os.environ.get("ROAS_CSV_URL", "")
     csv_url = st.sidebar.text_input(
         "Google Sheets CSV export URL (or leave blank to upload file):",
-        value=default_url
+        value=st.session_state.get("csv_url", default_url),
+        key="csv_url_input",
     )
-    load_btn = st.sidebar.button("Load data", type="primary")
-    uploaded = st.sidebar.file_uploader("Upload CSV (exported from your sheet)", type=["csv"])
 
+    colA, colB = st.sidebar.columns(2)
+    load_btn   = colA.button("Load data", type="primary")
+    reload_btn = colB.button("Reload")
+    clear_btn  = st.sidebar.button("Clear data")
+
+    uploaded = st.sidebar.file_uploader("Upload CSV (exported from your sheet)", type=["csv"], key="uploader")
+
+    # 0) Clear session
+    if clear_btn:
+        for k in ("df_wide", "source_type", "auto_loaded"):
+            st.session_state.pop(k, None)
+
+    # 1) Upload wins
     if uploaded is not None:
         df = pd.read_csv(uploaded)
+        st.session_state["df_wide"] = df
+        st.session_state["source_type"] = "upload"
         return df, "upload"
 
-    if load_btn and csv_url:
-        import requests, io
-        with st.spinner("Downloading CSV..."):
-            r = requests.get(csv_url, timeout=20)
-            r.raise_for_status()
-            df = pd.read_csv(io.StringIO(r.text))
+    # 2) Explicit load / reload (from URL)
+    if (load_btn or reload_btn) and csv_url:
+        df = _fetch_csv(csv_url)
+        st.session_state["df_wide"] = df
+        st.session_state["source_type"] = "url"
+        st.session_state["csv_url"] = csv_url
+        st.session_state["auto_loaded"] = True
+        return df, "url"
+
+    # 3) Use existing data in session (สำคัญที่สุด กันเด้งกลับ)
+    if "df_wide" in st.session_state:
+        return st.session_state["df_wide"], st.session_state.get("source_type", "session")
+
+    # 4) Auto-load ครั้งแรกถ้ามี URL ค่าเริ่มต้น
+    if (csv_url or default_url) and "auto_loaded" not in st.session_state:
+        url = csv_url or default_url
+        df = _fetch_csv(url)
+        st.session_state["df_wide"] = df
+        st.session_state["source_type"] = "url"
+        st.session_state["csv_url"] = url
+        st.session_state["auto_loaded"] = True
         return df, "url"
 
     st.info("Paste the CSV URL then click **Load data**, or upload a CSV file.")
     return None, None
+
 
 @st.cache_data(ttl=60*5, show_spinner=False)
 def build_long(df_wide):
