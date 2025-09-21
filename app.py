@@ -29,11 +29,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder
-    HAS_AGGRID = True
-except Exception:
-    HAS_AGGRID = False
+HAS_AGGRID = False  # ปิดไว้ก่อนให้รันชัวร์ ๆ (ค่อยเปิดทีหลัง)
+
 
 st.set_page_config(page_title="Shopee ROAS", layout="wide")
 
@@ -102,7 +99,7 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
     df_melt = df_wide.melt(id_vars=id_cols, value_vars=time_cols, var_name="time_col", value_name="metrics")
     # Parse timestamp
     ts = df_melt["time_col"].apply(lambda x: parse_timestamp_from_header(x, tz=tz))
-    df_melt["timestamp"] = ts.dt.tz_convert(tz)
+    df_melt["timestamp"] = ts  # ts ใส่โซนเวลาไว้แล้ว
     # Parse metrics
     metrics = df_melt["metrics"].apply(str_to_metrics_tuple)
     metrics_df = pd.DataFrame(metrics.tolist(), columns=["budget","user","order","view","sale","ro"])
@@ -376,8 +373,9 @@ elif page == "Channel":
 # COMPARE
 # -----------------------------
 else:
-    pick = st.multiselect("Pick 2–4 channels", options=channels, default=channels[:2], max_selections=4)
-    if len(pick) < 2:
+    pick = st.multiselect("Pick 2–4 channels", options=channels, default=channels[:2])
+    if len(pick) > 4:
+        pick = pick[:4]
         st.info("Please pick at least 2 channels.")
         st.stop()
     st.subheader(f"Compare: {', '.join(pick)}")
