@@ -27,6 +27,7 @@ import streamlit as st
 from datetime import datetime, date, timezone, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder
@@ -122,23 +123,27 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
 
 def load_data_from_sidebar():
     st.sidebar.header("Data source")
-    csv_url = st.sidebar.text_input("Google Sheets CSV export URL (or leave blank to upload file):", value=os.environ.get("ROAS_CSV_URL",""))
+    default_url = os.environ.get("ROAS_CSV_URL", "")
+    csv_url = st.sidebar.text_input(
+        "Google Sheets CSV export URL (or leave blank to upload file):",
+        value=default_url
+    )
+    load_btn = st.sidebar.button("Load data", type="primary")
     uploaded = st.sidebar.file_uploader("Upload CSV (exported from your sheet)", type=["csv"])
-    if csv_url:
-        try:
-            df = pd.read_csv(csv_url)
-            source = "url"
-            return df, source
-        except Exception as e:
-            st.sidebar.error(f"Failed to load from URL: {e}")
+
     if uploaded is not None:
-        try:
-            df = pd.read_csv(uploaded)
-            source = "upload"
-            return df, source
-        except Exception as e:
-            st.sidebar.error(f"Failed to read uploaded CSV: {e}")
-    st.info("Please paste a Google Sheets CSV URL or upload a CSV exported from your sheet.")
+        df = pd.read_csv(uploaded)
+        return df, "upload"
+
+    if load_btn and csv_url:
+        import requests, io
+        with st.spinner("Downloading CSV..."):
+            r = requests.get(csv_url, timeout=20)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+        return df, "url"
+
+    st.info("Paste the CSV URL then click **Load data**, or upload a CSV file.")
     return None, None
 
 @st.cache_data(ttl=60*5, show_spinner=False)
