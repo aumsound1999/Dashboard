@@ -52,15 +52,18 @@ auto_refresh(600000)  # 10 minutes
 # -----------------------------------------------------------------------------
 
 TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{{1,2}}\s+\d{{1,2}}:\d{{1,2}}$")  # e.g. D21 12:4
+def _norm(s: str) -> str:
+    # แทนที่ NBSP และช่องว่างซ้ำ ๆ ให้เป็น space ปกติ แล้ว trim
+    return re.sub(r"\s+", " ", str(s).replace("\xa0", " ")).strip()
 
 def is_time_col(col: str) -> bool:
-    return TIME_COL_PATTERN.match(col.strip()) is not None
+    c = _norm(col)
+    return TIME_COL_PATTERN.match(c) is not None
 
 def parse_timestamp_from_header(hdr: str, tz="Asia/Bangkok") -> pd.Timestamp:
-    """
-    "D21 12:4" -> day=21, hour=12, minute=4 (assume current month/year)
-    """
-    m = re.match(r"^[A-Z](\d{1,2})\s+(\d{1,2}):(\d{1,2})$", hdr.strip())
+    h = _norm(hdr)
+    m = re.match(r"^[A-Z](\d{1,2})\s+(\d{1,2}):(\d{1,2})$", h)
+
     if not m:
         return pd.NaT
     d, hh, mm = map(int, m.groups())
