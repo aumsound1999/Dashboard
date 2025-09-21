@@ -1,9 +1,9 @@
 # app.py
 # Streamlit dashboard: Overview • Channel • Compare
-# - Read wide CSV (Google Sheets export), parse "D21 13:45" headers to timestamps
-# - KPI: use cumulative snapshot
-# - Charts & Heatmap: use hourly increments (diff within day; negatives clipped to 0)
-# - RO caps at 50
+# - KPI: ใช้ cumulative snapshot ล่าสุด
+# - กราฟ/ฮีตแมป: ใช้ค่า increment รายชั่วโมง (diff ในวันเดียวกัน) และ clip ค่าติดลบเป็น 0
+# - RO (sale_ro_i / ads_ro_i) capped ที่ 50
+# - ถ้ามีคอลัมน์ sale_from_ads (ยอดขายจากแอดแบบสะสม) ให้ map ใส่เพื่อคำนวณ ads_ro_i ตามจริง
 
 import os, re, io
 import numpy as np
@@ -16,7 +16,7 @@ import plotly.express as px
 st.set_page_config(page_title="Shopee ROAS", layout="wide")
 
 # -----------------------------------------------------------------------------
-# Config & utilities
+# Helpers
 # -----------------------------------------------------------------------------
 
 TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{1,2}\s+\d{1,2}:\d{1,2}$")  # e.g. D21 12:45
@@ -36,7 +36,7 @@ def parse_timestamp_from_header(hdr: str, tz: str = "Asia/Bangkok") -> pd.Timest
         return pd.NaT
 
 def parse_metrics_cell(s: str):
-    """string of numbers separated by comma -> list[6]"""
+    """แปลงสตริงคอมมา -> list ความยาว 6"""
     if not isinstance(s, str) or not re.search(r"\d", s):
         return [np.nan] * 6
     s_clean = re.sub(r"[^0-9\.\-,]", "", s)
@@ -66,7 +66,6 @@ def load_wide_df():
     return pd.read_csv(io.StringIO(text))
 
 def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
-    """Parse wide sheet to long with cumulative metrics."""
     id_cols, time_cols = [], []
     for c in df_wide.columns:
         if str(c).strip().lower() == "name":
@@ -87,26 +86,22 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
     out = pd.concat([melted[["timestamp"] + id_cols], V], axis=1).rename(columns={"name": "channel"})
     out = out.dropna(subset=["timestamp"]).reset_index(drop=True)
 
-    # Mapping from your sheet:
-    out["sales"]   = pd.to_numeric(out["v0"], errors="coerce")   # cumulative
-    out["orders"]  = pd.to_numeric(out["v1"], errors="coerce")
-    out["ads"]     = pd.to_numeric(out["v2"], errors="coerce")   # budget cumulative
-    out["views"]   = pd.to_numeric(out["v3"], errors="coerce")
-    out["ads_ro_raw"] = pd.to_numeric(out["v4"], errors="coerce")  # optional raw ratio
-    out["misc"]    = pd.to_numeric(out["v5"], errors="coerce")
+    # Mapping คอลัมน์จากชีต
+    out["sales"]      = pd.to_numeric(out["v0"], errors="coerce")  # cumulative
+    out["orders"]     = pd.to_numeric(out["v1"], errors="coerce")
+    out["ads"]        = pd.to_numeric(out["v2"], errors="coerce")  # ad spend cumulative
+    out["views"]      = pd.to_numeric(out["v3"], errors="coerce")
+    out["ads_ro_raw"] = pd.to_numeric(out["v4"], errors="coerce")  # optional RO per channel
+    out["misc"]       = pd.to_numeric(out["v5"], errors="coerce")
 
-    # OPTIONAL: if you have "sale_from_ads" cumulative column in your sheet,
-    # put its mapping here, e.g. out["sale_from_ads"] = out["vX"]
-    # else keep it absent; ads_ro_i will fallback to sale_ro_i
+    # ถ้ามีคอลัมน์ยอดขายจากแอดสะสม ให้ map เพิ่ม (ตัวอย่าง)
+    # out["sale_from_ads"] = pd.to_numeric(out["v6"], errors="coerce")
+
     return out
 
 @st.cache_data(ttl=600, show_spinner=False)
 def build_long(df_wide):
     return long_from_wide(df_wide)
-
-# -----------------------------------------------------------------------------
-# Increment builders (no negatives) + RO capped at 50
-# -----------------------------------------------------------------------------
 
 def add_day_hour_cols(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -116,18 +111,20 @@ def add_day_hour_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_hourly_increments(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Convert cumulative metrics -> hourly increments within (channel, day).
-    Clip negatives to 0; make hourly RO from increments and cap at 50.
+    แปลง cumulative -> increment รายชั่วโมง (ภายใน channel/day)
+    ตัดค่าติดลบเป็น 0 และคำนวณ RO แบบรายชั่วโมง (cap 50)
     """
     sale_from_ads_col = "sale_from_ads" if "sale_from_ads" in df.columns else None
+
     need = ["channel","timestamp","day","hhmm","sales","orders","ads"]
     if sale_from_ads_col:
         need.append(sale_from_ads_col)
 
     d = df[need].sort_values(["channel","day","timestamp"]).copy()
-
     g = d.groupby(["channel","day"], group_keys=False)
-    def _inc(col): return g[col].diff().clip(lower=0)
+
+    def _inc(col):
+        return g[col].diff().clip(lower=0)
 
     d["sales_i"]  = _inc("sales")
     d["orders_i"] = _inc("orders")
@@ -140,12 +137,13 @@ def build_hourly_increments(df: pd.DataFrame) -> pd.DataFrame:
         d["sale_ads_i"] = _inc(sale_from_ads_col)
         d["ads_ro_i"]   = (d["sale_ads_i"] / (d["ads_i"] + eps)).clip(upper=50)
     else:
-        d["ads_ro_i"] = d["sale_ro_i"]  # proxy if no sale_from_ads
+        # หากไม่มียอดขายจากแอด ใช้ sale_ro_i เป็น proxy
+        d["ads_ro_i"] = d["sale_ro_i"]
 
     return d
 
 def build_overlay_by_day(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Return day+hhmm series for overlay chart from hourly increments."""
+    """เตรียมข้อมูลกราฟเส้นซ้อนรายวันจากยอดรายชั่วโมง"""
     metric_map = {
         "sales":"sales_i", "orders":"orders_i", "ads":"ads_i",
         "sale_ro":"sale_ro_i", "ads_ro":"ads_ro_i"
@@ -155,17 +153,19 @@ def build_overlay_by_day(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     df2 = add_day_hour_cols(df)
     inc  = build_hourly_increments(df2)
 
-    # sum for volume metrics / mean for RO
-    agg = "sum" if use_col in ["sales_i","orders_i","ads_i"] else "mean"
+    # ปริมาณใช้ sum, RO ใช้ mean
+    aggfunc = "sum" if use_col in ["sales_i","orders_i","ads_i"] else "mean"
+
+    # **แก้ error**: aggregate บน Series แล้ว rename
     out = (
         inc.groupby(["day","hhmm"], as_index=False)[use_col]
-           .agg(val=(use_col, agg))
+           .agg(aggfunc)
+           .rename(columns={use_col:"val"})
            .sort_values(["day","hhmm"])
     )
     return out
 
 def build_heatmap(df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """Return pivot(day x hour) of hourly increments (mean for RO)."""
     metric_map = {
         "sales":"sales_i", "orders":"orders_i", "ads":"ads_i",
         "sale_ro":"sale_ro_i", "ads_ro":"ads_ro_i"
@@ -179,12 +179,7 @@ def build_heatmap(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     pivot = pivot.reindex(sorted(pivot.columns, key=lambda s: s), axis=1)
     return pivot
 
-# -----------------------------------------------------------------------------
-# KPI snapshot (cumulative) and helpers
-# -----------------------------------------------------------------------------
-
 def pick_snapshot_at(df: pd.DataFrame, at_ts: pd.Timestamp) -> pd.DataFrame:
-    """Pick latest row in the same hour for each channel."""
     if df.empty:
         return df
     target_hour = at_ts.floor("H")
@@ -212,7 +207,6 @@ def kpis_from_snapshot(snap: pd.DataFrame):
     ads   = snap["ads"].sum()
     sale_ro = (sales/ads) if ads else np.nan
 
-    # ถ้าชีตมี ads_ro_raw (ค่า RO ต่อช่อง) เอาค่าเฉลี่ย >0
     if "ads_ro_raw" in snap.columns:
         r = snap["ads_ro_raw"]
         ads_ro_avg = r[r>0].mean()
@@ -226,7 +220,7 @@ def pct_delta(curr, prev):
     return (curr - prev) * 100.0 / prev
 
 # -----------------------------------------------------------------------------
-# Load + filters
+# Load & filters
 # -----------------------------------------------------------------------------
 
 st.sidebar.header("Filters")
@@ -254,7 +248,8 @@ d1, d2 = st.sidebar.date_input(
     value=(date_min_default, date_max),
     min_value=min_ts.date(), max_value=date_max,
 )
-if isinstance(d1, (list, tuple)): d1, d2 = d1
+if isinstance(d1, (list, tuple)):
+    d1, d2 = d1
 start_ts = pd.Timestamp.combine(d1, pd.Timestamp("00:00").time()).tz_localize(tz)
 end_ts   = pd.Timestamp.combine(d2, pd.Timestamp("23:59").time()).tz_localize(tz)
 
@@ -280,7 +275,7 @@ st.caption(f"Last refresh: {now_ts.strftime('%Y-%m-%d %H:%M:%S')}")
 # Pages
 # -----------------------------------------------------------------------------
 
-metrics_list = ["sales","orders","ads","sale_ro","ads_ro"]  # for dropdowns
+metrics_list = ["sales","orders","ads","sale_ro","ads_ro"]
 
 if page=="Overview":
     st.subheader("Overview (All selected channels)")
@@ -307,11 +302,10 @@ if page=="Overview":
                 delta=(f"{pct_delta(cur['AdsRO_avg'], prev['AdsRO_avg']):+.1f}%" if not pd.isna(prev["AdsRO_avg"]) else None))
     st.caption(f"Snapshot hour: {cur_hour}")
 
-    # Trend overlay (increment-based)
     st.markdown("### Trend overlay by day")
     metric = st.selectbox("Metric to plot (เลือกได้ 1 ค่า)", options=metrics_list, index=0, key="ov_metric")
     overlay = build_overlay_by_day(d, metric)
-    # pivot -> lines per day
+
     for_day = overlay.pivot(index="hhmm", columns="day", values="val").sort_index()
     fig = go.Figure()
     for day in for_day.columns:
@@ -319,7 +313,6 @@ if page=="Overview":
     fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=metric)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Heatmap
     st.markdown("### Prime hours heatmap")
     heat = build_heatmap(d, metric)
     fig_h = px.imshow(heat, aspect="auto", labels=dict(x="Hour", y="Day", color=metric))
@@ -380,7 +373,6 @@ else:  # Compare
 
     st.subheader(f"Compare: {', '.join(pick)}")
 
-    # Use hourly increments then compare by relative difference vs baseline
     base = st.selectbox("Baseline channel", options=pick, index=0)
     met  = st.selectbox("Metric", options=["sales","orders","ads","sale_ro","ads_ro"], index=0)
 
@@ -399,9 +391,8 @@ else:  # Compare
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Small multiples")
-    sm = piv  # already hourly series per channel
     fig2 = go.Figure()
-    for c in sm.columns:
-        fig2.add_trace(go.Scatter(x=sm.index, y=sm[c], name=c, mode="lines"))
+    for c in piv.columns:
+        fig2.add_trace(go.Scatter(x=piv.index, y=piv[c], name=c, mode="lines"))
     fig2.update_layout(height=360, legend=dict(orientation="h", y=-0.25))
     st.plotly_chart(fig2, use_container_width=True)
