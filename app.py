@@ -1,106 +1,106 @@
-# app.py
-# Shopee ROAS Dashboard — Overview • Channel • Compare
-# ----------------------------------------------------
+# Shopee ROAS Dashboard (New KPIs: Sales / Orders / Ads / Ads_RO / Sale_RO)
+# --------------------------------------------------------------------------
+# Data source: Google Sheets CSV (gviz/tq?tqx=out:csv&sheet=<sheet_name>)
+#   - Set a Secret on Streamlit Cloud: ROAS_CSV_URL="https://docs.google.com/.../gviz/tq?tqx=out:csv&sheet=sale_roai"
+#   - Or set environment variable ROAS_CSV_URL
+#
+# Behaviors:
+#   - Read only (no switching sheet). Left panel shows only Reload + Last refresh.
+#   - Auto-refresh every 10 minutes.
+#   - Parse time headers like "D21 12:4" (day=21 hour=12 minute=4) → timestamp (Asia/Bangkok)
+#   - From the selected time columns (C/D/...): take first four numbers per cell:
+#       sales, orders, ads, ads_ro
+#     (Sale_RO is computed: total_sales / total_ads)
+#   - %Δ under KPIs compares against the same time range "yesterday"
+#   - Default date range = latest 3 calendar days (including today)
+#   - Filters: Channels = contains "All" option (if All chosen → all channels)
+#   - Channel page: pick one channel from ALL channels (ignores filter)
+#
+# --------------------------------------------------------------------------
 
-import os, re, io, math
+import os, re, io, math, time
 import numpy as np
 import pandas as pd
 import streamlit as st
-from datetime import datetime, date, timezone, timedelta
+from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
+from streamlit.components.v1 import html
 
-# =========================
-# App setup
-# =========================
+# -----------------------------------------------------------------------------
+# Page config + Auto refresh (10 minutes)
+# -----------------------------------------------------------------------------
 st.set_page_config(page_title="Shopee ROAS", layout="wide")
-st.title("Shopee ROAS Dashboard")
 
-# -------- Auto reload every 10 minutes (600,000 ms)
-try:
-    from streamlit_autorefresh import st_autorefresh  # optional
-    st_autorefresh(interval=600_000, key="auto")
-except Exception:
-    st.markdown(
-        "<script>setTimeout(function(){window.location.reload();},600000);</script>",
-        unsafe_allow_html=True,
+def auto_refresh(interval_ms: int = 600000):
+    """Auto reload the page using a tiny JS snippet."""
+    html(f"""
+        <script>
+            setTimeout(function() {{
+                window.location.reload();
+            }}, {interval_ms});
+        </script>
+        """,
+        height=0,
     )
 
-# =========================
-# Data loader (from Secrets)
-# =========================
-CSV_URL = os.environ.get("ROAS_CSV_URL", "").strip()
+auto_refresh(600000)  # 10 minutes
 
-def _fetch_csv(url: str) -> pd.DataFrame:
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    return pd.read_csv(io.StringIO(r.text))
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
 
-@st.cache_data(ttl=600, show_spinner=False)  # cache 10 minutes
-def get_wide_df(url: str) -> pd.DataFrame:
-    return _fetch_csv(url)
-
-def load_or_reload(force=False):
-    if not CSV_URL:
-        st.error("Missing ROAS_CSV_URL in Secrets.")
-        st.stop()
-    if force:
-        get_wide_df.clear()
-    df = get_wide_df(CSV_URL)
-    st.session_state["df_wide"] = df
-    st.session_state["last_refresh"] = datetime.now(timezone.utc)
-    return df
-
-# initial load (first visit)
-df_wide = st.session_state.get("df_wide")
-if df_wide is None:
-    df_wide = load_or_reload(force=False)
-
-# =========================
-# Helpers for shaping / KPIs
-# =========================
-
-TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{1,2}\s+\d{1,2}:\d{1,2}$")  # e.g., D21 12:4
+TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{{1,2}}\s+\d{{1,2}}:\d{{1,2}}$")  # e.g. D21 12:4
 
 def is_time_col(col: str) -> bool:
     return TIME_COL_PATTERN.match(col.strip()) is not None
 
-def parse_timestamp_from_header(hdr: str, year=None, month=None, tz="Asia/Bangkok") -> pd.Timestamp:
-    # hdr example: "D21 12:4" -> day=21, hour=12, minute=4
+def parse_timestamp_from_header(hdr: str, tz="Asia/Bangkok") -> pd.Timestamp:
+    """
+    "D21 12:4" -> day=21, hour=12, minute=4 (assume current month/year)
+    """
     m = re.match(r"^[A-Z](\d{1,2})\s+(\d{1,2}):(\d{1,2})$", hdr.strip())
     if not m:
         return pd.NaT
     d, hh, mm = map(int, m.groups())
     now = pd.Timestamp.now(tz=tz)
-    if year is None: year = now.year
-    if month is None: month = now.month
     try:
-        ts = pd.Timestamp(year=year, month=month, day=d, hour=hh, minute=mm, tz=tz)
+        ts = pd.Timestamp(year=now.year, month=now.month, day=d, hour=hh, minute=mm, tz=tz)
     except Exception:
         ts = pd.NaT
     return ts
 
 def str_to_metrics_tuple(s: str):
-    # metrics in a cell like "budget,user,order,view,sale,ro,(maybe extra...)".
+    """
+    Convert metrics cell into (sales, orders, ads, ads_ro).
+    The sheet cell is a CSV string; we take the first 4 numeric tokens.
+    (Sale_RO will be computed later as total_sales / total_ads)
+    """
     if not isinstance(s, str):
-        return (np.nan,)*6
+        return (np.nan, np.nan, np.nan, np.nan)
     if not re.search(r"\d", s):
-        return (np.nan,)*6
+        return (np.nan, np.nan, np.nan, np.nan)
+
     s_clean = re.sub(r"[^0-9\.\-,]", "", s)
     parts = [p for p in s_clean.split(",") if p != ""]
-    nums = []
-    for p in parts[:6]:
+
+    vals = []
+    for p in parts[:4]:  # sales, orders, ads, ads_ro
         try:
-            nums.append(float(p))
+            vals.append(float(p))
         except:
-            nums.append(np.nan)
-    while len(nums) < 6:
-        nums.append(np.nan)
-    return tuple(nums[:6])
+            vals.append(np.nan)
+
+    while len(vals) < 4:
+        vals.append(np.nan)
+    return tuple(vals[:4])
 
 def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
-    # Identify columns
+    """
+    Melt wide sheet into long format with columns:
+      channel, timestamp, sales, orders, ads, ads_ro
+    """
     cols = list(df_wide.columns)
     id_cols, time_cols = [], []
     for c in cols:
@@ -108,322 +108,312 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
             id_cols.append(c)
         elif is_time_col(c):
             time_cols.append(c)
-        else:
-            pass  # ignore meta
+
     if not time_cols:
-        raise ValueError("No time columns detected (e.g. 'D21 12:4').")
+        raise ValueError("No time columns detected. Expect headers like 'D21 12:4'.")
 
     df_melt = df_wide.melt(id_vars=id_cols, value_vars=time_cols,
                            var_name="time_col", value_name="metrics")
+
     ts = df_melt["time_col"].apply(lambda x: parse_timestamp_from_header(x, tz=tz))
     df_melt["timestamp"] = ts
 
     metrics = df_melt["metrics"].apply(str_to_metrics_tuple)
     metrics_df = pd.DataFrame(metrics.tolist(),
-                              columns=["budget","user","order","view","sale","ro"])
+                              columns=["sales", "orders", "ads", "ads_ro"])
+
     out = pd.concat([df_melt[["timestamp"] + id_cols], metrics_df], axis=1)
-    out.rename(columns={"name":"channel"}, inplace=True)
+    out.rename(columns={"name": "channel"}, inplace=True)
     out = out.dropna(subset=["timestamp"]).reset_index(drop=True)
 
-    for c in ["budget","user","order","view","sale","ro"]:
+    for c in ["sales", "orders", "ads", "ads_ro"]:
         out[c] = pd.to_numeric(out[c], errors="coerce")
 
-    # KPIs
-    out["ROAS"] = out["sale"] / out["budget"].replace(0, np.nan)
-    out["AOV"]  = out["sale"] / out["order"].replace(0, np.nan)
-    out["CPO"]  = out["budget"] / out["order"].replace(0, np.nan)
-    out["RPV"]  = out["sale"] / out["view"].replace(0, np.nan)
-    out["ORV"]  = out["order"] / out["view"].replace(0, np.nan)
+    # convenience per-row ratio (may be NaN)
+    out["sale_ro_row"] = out["sales"] / out["ads"].replace(0, np.nan)
+
     return out
 
-@st.cache_data(ttl=600, show_spinner=False)
-def build_long(df):
-    return long_from_wide(df)
-
 def aggregate_hourly(df):
+    """Keep latest snapshot within each hour per channel."""
     df = df.copy()
     df["hour"] = df["timestamp"].dt.floor("H")
-    idx = df.sort_values("timestamp").groupby(["channel","hour"]).tail(1).index
+    idx = df.sort_values("timestamp").groupby(["channel", "hour"]).tail(1).index
     return df.loc[idx]
 
 def compute_totals(df):
+    """
+    New KPI definitions:
+      Sales  = sum(sales)
+      Orders = sum(orders)
+      Ads    = sum(ads)
+      Ads_RO = mean(ads_ro where ads_ro > 0)
+      Sale_RO= (sum sales) / (sum ads)
+    """
+    t = {}
     if df is None or df.empty:
-        return dict(Sales=np.nan, Orders=np.nan, Budget=np.nan,
-                    ROAS=np.nan, AOV=np.nan, CPO=np.nan, RPV=np.nan, ORV=np.nan)
-    totals = {}
-    totals["Sales"]  = df["sale"].sum()
-    totals["Orders"] = df["order"].sum()
-    totals["Budget"] = df["budget"].sum()
-    totals["ROAS"]   = (df["sale"].sum() / df["budget"].sum()) if df["budget"].sum()!=0 else np.nan
-    totals["AOV"]    = (df["sale"].sum() / df["order"].sum())  if df["order"].sum()!=0  else np.nan
-    totals["CPO"]    = (df["budget"].sum() / df["order"].sum()) if df["order"].sum()!=0 else np.nan
-    totals["RPV"]    = (df["sale"].sum() / df["view"].sum())   if df["view"].sum()!=0   else np.nan
-    totals["ORV"]    = (df["order"].sum() / df["view"].sum())  if df["view"].sum()!=0   else np.nan
-    return totals
+        for k in ["Sales", "Orders", "Ads", "Ads_RO", "Sale_RO"]:
+            t[k] = np.nan
+        return t
+
+    t["Sales"]  = df["sales"].sum()
+    t["Orders"] = df["orders"].sum()
+    t["Ads"]    = df["ads"].sum()
+
+    pos = df["ads_ro"] > 0
+    t["Ads_RO"] = df.loc[pos, "ads_ro"].mean() if pos.any() else np.nan
+
+    t["Sale_RO"] = (t["Sales"] / t["Ads"]) if (t["Ads"] and t["Ads"] != 0) else np.nan
+    return t
 
 def pct_delta(curr, prev):
-    if prev in [0, None] or pd.isna(prev): return None
-    if curr is None or pd.isna(curr): return None
-    return (curr - prev) * 100.0 / prev
-
-def format_big(x):
-    if pd.isna(x): return "-"
+    """% change vs baseline."""
+    if prev in [0, None] or (isinstance(prev, float) and np.isnan(prev)):
+        return None
+    if curr is None or (isinstance(curr, float) and np.isnan(curr)):
+        return None
     try:
-        return f"{x:,.0f}"
-    except:
-        return str(x)
+        return (curr - prev) * 100.0 / prev
+    except ZeroDivisionError:
+        return None
 
-def kpi_card(label, value, delta=None, col=None):
-    target = st if col is None else col
-    if delta is None:
-        target.metric(label, format_big(value))
-    else:
-        target.metric(label, format_big(value), delta=f"{delta:+.1f}%")
+# -----------------------------------------------------------------------------
+# Data loading (from Secrets / env)
+# -----------------------------------------------------------------------------
 
-# =========================
-# Sidebar: Data source + Filters
-# =========================
+def get_csv_url() -> str:
+    url = ""
+    try:
+        # Prefer Streamlit Secrets
+        url = st.secrets["ROAS_CSV_URL"]
+    except Exception:
+        # Fallback to env
+        url = os.environ.get("ROAS_CSV_URL", "")
+    return url
 
-st.sidebar.header("Data source")
-colL, colR = st.sidebar.columns([1,1])
-if colL.button("Reload", use_container_width=True):
-    df_wide = load_or_reload(force=True)
-with colR:
-    ts = st.session_state.get("last_refresh")
-    st.caption("Last refresh: " + (ts.astimezone().strftime("%Y-%m-%d %H:%M:%S") if ts else "-"))
+@st.cache_data(ttl=300, show_spinner=True)  # cache 5 minutes
+def load_wide_df(url: str) -> pd.DataFrame:
+    r = requests.get(url, timeout=20)
+    r.raise_for_status()
+    df = pd.read_csv(io.StringIO(r.text))
+    return df
 
-st.sidebar.divider()
-st.sidebar.header("Filters")
+@st.cache_data(ttl=300, show_spinner=False)
+def build_long_df(df_wide: pd.DataFrame) -> pd.DataFrame:
+    return long_from_wide(df_wide)
 
-# Build long dataframe
+def reload_data():
+    st.cache_data.clear()
+    st.session_state["last_reload"] = datetime.now()
+
+# -----------------------------------------------------------------------------
+# Sidebar (Reload only)
+# -----------------------------------------------------------------------------
+st.sidebar.header("Data")
+if "last_reload" not in st.session_state:
+    st.session_state["last_reload"] = datetime.now()
+
+colR1, colR2 = st.sidebar.columns([1,1])
+if colR1.button("Reload", use_container_width=True):
+    reload_data()
+    st.experimental_rerun()
+
+colR2.write("")
+colR2.caption(f"Last refresh: {st.session_state['last_reload'].strftime('%Y-%m-%d %H:%M:%S')}")
+
+# -----------------------------------------------------------------------------
+# Load & Transform
+# -----------------------------------------------------------------------------
+csv_url = get_csv_url()
+if not csv_url:
+    st.error("Missing ROAS_CSV_URL. Please set it in Secrets or environment.")
+    st.stop()
+
 try:
-    df_long = build_long(df_wide)
+    df_wide = load_wide_df(csv_url)
 except Exception as e:
-    st.error(f"Failed to parse sheet: {e}")
+    st.error(f"Download failed: {e}")
+    st.stop()
+
+try:
+    df_long = build_long_df(df_wide)
+except Exception as e:
+    st.error(f"Parse failed: {e}")
     st.write(df_wide.head())
     st.stop()
 
-ALL_CHANNELS = sorted(df_long["channel"].dropna().unique().tolist())
+# -----------------------------------------------------------------------------
+# Filters
+# -----------------------------------------------------------------------------
+st.title("Shopee ROAS Dashboard")
 
-# Select all toggle
-select_all = st.sidebar.checkbox("Select all channels", value=True)
-if select_all:
-    selected_channels = ALL_CHANNELS[:]
+# channels list (for filter) + Add 'All'
+all_channels = sorted(df_long["channel"].dropna().unique().tolist())
+filter_options = ["All"] + all_channels
+default_sel = ["All"]
+
+st.sidebar.header("Filters")
+selected_channels = st.sidebar.multiselect("Channels", options=filter_options, default=default_sel)
+
+# Treat "All" as selecting everything
+if ("All" in selected_channels) or (len(selected_channels) == 0):
+    selected_channels_effective = all_channels
 else:
-    selected_channels = st.sidebar.multiselect("Channels", options=ALL_CHANNELS,
-                                               default=ALL_CHANNELS[:10])
+    selected_channels_effective = selected_channels
 
-# Date range from data
-tz = "Asia/Bangkok"
+# Default date range = latest 3 calendar days (including today)
 min_ts = df_long["timestamp"].min()
 max_ts = df_long["timestamp"].max()
 if pd.isna(min_ts) or pd.isna(max_ts):
-    st.warning("No valid timestamps found."); st.stop()
+    st.warning("No valid timestamps found in the sheet.")
+    st.stop()
 
-date_min = min_ts.date()
 date_max = max_ts.date()
-d1, d2 = st.sidebar.date_input("Date range",
-                               value=(date_min, date_max),
-                               min_value=date_min, max_value=date_max)
-if isinstance(d1, (list, tuple)):  # safety
+date_min = (max_ts - pd.Timedelta(days=2)).date()  # 3 days window
+d1, d2 = st.sidebar.date_input(
+    "Date range",
+    value=(date_min, date_max),
+    min_value=min_ts.date(),
+    max_value=date_max
+)
+if isinstance(d1, (list, tuple)):
     d1, d2 = d1
+
+tz = "Asia/Bangkok"
 start_ts = pd.Timestamp.combine(d1, pd.Timestamp("00:00").time()).tz_localize(tz)
 end_ts   = pd.Timestamp.combine(d2, pd.Timestamp("23:59").time()).tz_localize(tz)
 
-page = st.sidebar.radio("Page", ["Overview","Channel","Compare"])
+page = st.sidebar.radio("Page", ["Overview", "Channel"], index=0)
 
-# =========================
-# Filtered datasets
-# =========================
+# Apply filters for the working dataset
+mask = (df_long["channel"].isin(selected_channels_effective)) & \
+       (df_long["timestamp"] >= start_ts) & (df_long["timestamp"] <= end_ts)
+d = df_long.loc[mask].copy()
 
-# For Overview -> filter by selected channels + date
-mask_overview = (df_long["channel"].isin(selected_channels)) & \
-                (df_long["timestamp"]>=start_ts) & (df_long["timestamp"]<=end_ts)
-d_overview = df_long.loc[mask_overview].copy()
+if d.empty:
+    st.warning("No data for the selected filters.")
+    st.stop()
 
-# For Channel/Compare -> use all channels for dropdown, but time-limited
-mask_time_only = (df_long["timestamp"]>=start_ts) & (df_long["timestamp"]<=end_ts)
-d_time_only = df_long.loc[mask_time_only].copy()
+# Precompute hourly snapshot (latest per hour)
+hourly = aggregate_hourly(d)
 
-# Snapshot hourly
-hourly_overview = aggregate_hourly(d_overview) if not d_overview.empty else d_overview
-hourly_time_only = aggregate_hourly(d_time_only) if not d_time_only.empty else d_time_only
-
-# Baseline yesterday (for deltas)
+# Baseline = yesterday same range (still respecting the filter channels)
 y_start = start_ts - pd.Timedelta(days=1)
-y_end   = end_ts - pd.Timedelta(days=1)
-base_mask_overview = (df_long["channel"].isin(selected_channels)) & \
-                     (df_long["timestamp"]>=y_start) & (df_long["timestamp"]<=y_end)
-baseline_hourly_overview = aggregate_hourly(df_long.loc[base_mask_overview]) \
-                           if not df_long.loc[base_mask_overview].empty else None
+y_end   = end_ts   - pd.Timedelta(days=1)
+base_mask = (df_long["channel"].isin(selected_channels_effective)) & \
+            (df_long["timestamp"] >= y_start) & (df_long["timestamp"] <= y_end)
+baseline_hourly = aggregate_hourly(df_long.loc[base_mask]) if not df_long.loc[base_mask].empty else None
 
-baseline_time_only = aggregate_hourly(
-    df_long.loc[(df_long["timestamp"]>=y_start) & (df_long["timestamp"]<=y_end)]
-) if not df_long.loc[(df_long["timestamp"]>=y_start) & (df_long["timestamp"]<=y_end)].empty else None
-
-# =========================
-# PAGES
-# =========================
-
+# -----------------------------------------------------------------------------
+# OVERVIEW
+# -----------------------------------------------------------------------------
 if page == "Overview":
     st.subheader("Overview (All selected channels)")
 
-    totals = compute_totals(hourly_overview)
-    base_totals = compute_totals(baseline_hourly_overview) if baseline_hourly_overview is not None else {}
+    curr = compute_totals(hourly)
+    prev = compute_totals(baseline_hourly) if baseline_hourly is not None else {}
 
-    cols = st.columns(8)
-    for i,lbl in enumerate(["Sales","Orders","Budget","ROAS","AOV","CPO","RPV","ORV"]):
-        curr = totals.get(lbl, np.nan)
-        prev = base_totals.get(lbl, np.nan) if base_totals else np.nan
-        delta = pct_delta(curr, prev) if not pd.isna(prev) else None
-        kpi_card(lbl, curr, delta=delta, col=cols[i])
+    labels = ["Sales","Orders","Ads","Ads_RO","Sale_RO"]
+    cols = st.columns(len(labels))
+    for i, k in enumerate(labels):
+        now = curr.get(k, np.nan)
+        bef = prev.get(k, np.nan)
+        delta = pct_delta(now, bef)
+        # pretty format
+        if k in ["Ads_RO", "Sale_RO"]:
+            value_str = "-" if pd.isna(now) else f"{now:,.2f}"
+        else:
+            value_str = "-" if pd.isna(now) else f"{now:,.0f}"
+        delta_str = None if delta is None else f"{delta:+.1f}%"
+        cols[i].metric(k, value_str, delta_str)
 
-    # Trend
-    st.markdown("### Trend by hour")
-    if not hourly_overview.empty:
-        trend = hourly_overview.groupby("hour").agg({"sale":"sum","order":"sum","budget":"sum"}).reset_index()
-        trend["ROAS"] = trend["sale"] / trend["budget"].replace(0, np.nan)
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=trend["hour"], y=trend["sale"],   mode="lines+markers", name="Sales"))
-        fig.add_trace(go.Scatter(x=trend["hour"], y=trend["order"],  mode="lines+markers", name="Orders", yaxis="y2"))
-        fig.add_trace(go.Scatter(x=trend["hour"], y=trend["ROAS"],   mode="lines+markers", name="ROAS",  yaxis="y3"))
-        fig.update_layout(
-            xaxis_title="Hour",
-            yaxis=dict(title="Sales"),
-            yaxis2=dict(title="Orders", overlaying="y", side="right"),
-            yaxis3=dict(title="ROAS", anchor="free", overlaying="y", side="right", position=1.0),
-            legend=dict(orientation="h", y=-0.2),
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No data in selected range.")
+    st.markdown("### Trend by hour (Sales / Orders / Ads)")
+    tr = hourly.groupby("hour").agg(
+        sales=("sales","sum"),
+        orders=("orders","sum"),
+        ads=("ads","sum"),
+    ).reset_index()
 
-    # Heatmap
-    st.markdown("### Prime hours heatmap")
-    metric = st.selectbox("Heatmap metric", ["Sales","ROAS","ORV"], index=0, key="heat_metric")
-    if not hourly_overview.empty:
-        tmp = hourly_overview.copy()
-        tmp["day"] = tmp["hour"].dt.date
-        tmp["hr"]  = tmp["hour"].dt.hour
-        agg_map = {"Sales":"sale","ROAS":"ROAS","ORV":"ORV"}
-        heat = tmp.groupby(["day","hr"]).agg(val=(agg_map[metric],"mean")).reset_index()
-        heat_pivot = heat.pivot(index="day", columns="hr", values="val").sort_index(ascending=False)
-        fig_h = px.imshow(heat_pivot, aspect="auto", color_continuous_scale="YlOrRd",
-                          labels=dict(x="Hour", y="Day", color=metric))
-        st.plotly_chart(fig_h, use_container_width=True)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=tr["hour"], y=tr["sales"],  mode="lines+markers", name="Sales"))
+    fig.add_trace(go.Scatter(x=tr["hour"], y=tr["orders"], mode="lines+markers", name="Orders", yaxis="y2"))
+    fig.add_trace(go.Scatter(x=tr["hour"], y=tr["ads"],    mode="lines+markers", name="Ads",    yaxis="y3"))
+    fig.update_layout(
+        xaxis_title="Hour",
+        yaxis=dict(title="Sales"),
+        yaxis2=dict(title="Orders", overlaying="y", side="right"),
+        yaxis3=dict(title="Ads",    overlaying="y", side="right", position=1.0),
+        legend=dict(orientation="h", y=-0.2),
+        height=420
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    # Leaderboard
-    st.markdown("### Leaderboard by channel")
-    if not hourly_overview.empty:
-        ldb = hourly_overview.groupby("channel").agg(
-            Sales=("sale","sum"), Orders=("order","sum"), Budget=("budget","sum")
-        ).reset_index()
-        ldb["ROAS"] = ldb["Sales"] / ldb["Budget"].replace(0, np.nan)
-        ldb["CPO"]  = ldb["Budget"] / ldb["Orders"].replace(0, np.nan)
-        st.dataframe(ldb.round(3).sort_values("ROAS", ascending=False),
-                     use_container_width=True)
+    st.markdown("### Prime hours heatmap (Sales)")
+    tmp = hourly.copy()
+    tmp["day"] = tmp["hour"].dt.date
+    tmp["hr"]  = tmp["hour"].dt.hour
+    heat = tmp.groupby(["day","hr"]).agg(val=("sales","sum")).reset_index()
+    heat_pivot = heat.pivot(index="day", columns="hr", values="val").sort_index(ascending=False)
+    fig_h = px.imshow(heat_pivot, aspect="auto", color_continuous_scale="YlOrRd",
+                      labels=dict(x="Hour", y="Day", color="Sales"))
+    st.plotly_chart(fig_h, use_container_width=True)
 
-    # Raw table
     st.markdown("### Data (hourly latest snapshot per channel)")
-    if not hourly_overview.empty:
-        show_cols = ["hour","channel","budget","user","order","view","sale","ROAS","AOV","CPO","RPV","ORV"]
-        st.dataframe(hourly_overview[show_cols].sort_values(["hour","channel"]).round(3),
-                     use_container_width=True)
+    show_cols = ["hour","channel","sales","orders","ads","ads_ro","sale_ro_row"]
+    st.dataframe(hourly[show_cols].sort_values(["hour","channel"]).round(3),
+                 use_container_width=True)
 
-# ---------------- CHANNEL ----------------
-elif page == "Channel":
-    ch = st.selectbox("Pick one channel", options=ALL_CHANNELS, index=0)
+# -----------------------------------------------------------------------------
+# CHANNEL
+# -----------------------------------------------------------------------------
+else:
+    # IMPORTANT: list all channels from sheet (ignoring filter)
+    ch = st.selectbox("Pick one channel (all channels)", options=all_channels, index=0)
 
-    if hourly_time_only.empty:
-        st.info("No data in selected range."); st.stop()
+    # current range for that channel
+    ch_mask = (df_long["channel"] == ch) & \
+              (df_long["timestamp"] >= start_ts) & (df_long["timestamp"] <= end_ts)
+    ch_df = aggregate_hourly(df_long.loc[ch_mask])
 
-    ch_df = hourly_time_only[hourly_time_only["channel"]==ch].copy()
+    # baseline yesterday for that channel
+    ch_base_mask = (df_long["channel"] == ch) & \
+                   (df_long["timestamp"] >= y_start) & (df_long["timestamp"] <= y_end)
+    base_ch = aggregate_hourly(df_long.loc[ch_base_mask]) if not df_long.loc[ch_base_mask].empty else None
+
     st.subheader(f"Channel • {ch}")
 
-    # KPI row
-    base_df = baseline_time_only[baseline_time_only["channel"]==ch] if baseline_time_only is not None else None
-    totals = compute_totals(ch_df)
-    base_totals = compute_totals(base_df) if base_df is not None and not base_df.empty else {}
-    cols = st.columns(8)
-    for i,lbl in enumerate(["Sales","Orders","Budget","ROAS","AOV","CPO","RPV","ORV"]):
-        curr = totals.get(lbl, np.nan)
-        prev = base_totals.get(lbl, np.nan) if base_totals else np.nan
-        delta = pct_delta(curr, prev) if not pd.isna(prev) else None
-        kpi_card(lbl, curr, delta=delta, col=cols[i])
+    curr = compute_totals(ch_df)
+    prev = compute_totals(base_ch) if base_ch is not None else {}
 
-    # Multi-axis line
-    st.markdown("### Multi-axis line")
-    if not ch_df.empty:
-        tr = ch_df.sort_values("hour")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=tr["hour"], y=tr["sale"],   mode="lines+markers", name="Sales"))
-        fig.add_trace(go.Scatter(x=tr["hour"], y=tr["order"],  mode="lines+markers", name="Orders", yaxis="y2"))
-        fig.add_trace(go.Scatter(x=tr["hour"], y=tr["budget"], mode="lines+markers", name="Budget", yaxis="y3"))
-        fig.add_trace(go.Scatter(x=tr["hour"], y=tr["ROAS"],   mode="lines+markers", name="ROAS", yaxis="y4"))
-        fig.update_layout(
-            xaxis_title="Hour",
-            yaxis=dict(title="Sales"),
-            yaxis2=dict(title="Orders", overlaying="y", side="right"),
-            yaxis3=dict(title="Budget", overlaying="y", side="right", position=1.0),
-            yaxis4=dict(title="ROAS", overlaying="y", side="right", position=0.95),
-            legend=dict(orientation="h", y=-0.3),
-            height=420
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    labels = ["Sales","Orders","Ads","Ads_RO","Sale_RO"]
+    cols = st.columns(len(labels))
+    for i, k in enumerate(labels):
+        now = curr.get(k, np.nan)
+        bef = prev.get(k, np.nan)
+        delta = pct_delta(now, bef)
+        if k in ["Ads_RO", "Sale_RO"]:
+            value_str = "-" if pd.isna(now) else f"{now:,.2f}"
+        else:
+            value_str = "-" if pd.isna(now) else f"{now:,.0f}"
+        delta_str = None if delta is None else f"{delta:+.1f}%"
+        cols[i].metric(k, value_str, delta_str)
 
-        # 24h distribution
-        st.markdown("### 24h distribution")
-        tr["h"] = tr["hour"].dt.hour
-        dbar = tr.groupby("h").agg(Sales=("sale","sum"), ORV=("ORV","mean"), RPV=("RPV","mean")).reset_index()
-        st.plotly_chart(px.bar(dbar, x="h", y="Sales"), use_container_width=True)
-        st.caption("Bars show Sales/hour; hover to see ORV/RPV (mean).")
-    else:
-        st.info("This channel has no data in the selected range.")
+    st.markdown("### Multi-axis line (Sales / Orders / Ads)")
+    tr = ch_df.sort_values("hour")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=tr["hour"], y=tr["sales"],  mode="lines+markers", name="Sales"))
+    fig.add_trace(go.Scatter(x=tr["hour"], y=tr["orders"], mode="lines+markers", name="Orders", yaxis="y2"))
+    fig.add_trace(go.Scatter(x=tr["hour"], y=tr["ads"],    mode="lines+markers", name="Ads",    yaxis="y3"))
+    fig.update_layout(
+        xaxis_title="Hour",
+        yaxis=dict(title="Sales"),
+        yaxis2=dict(title="Orders", overlaying="y", side="right"),
+        yaxis3=dict(title="Ads",    overlaying="y", side="right", position=1.0),
+        legend=dict(orientation="h", y=-0.3),
+        height=420
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-# ---------------- COMPARE ----------------
-else:
-    pick = st.multiselect("Pick 2–4 channels", options=ALL_CHANNELS, default=ALL_CHANNELS[:2])
-    if len(pick) < 2:
-        st.info("Please pick at least 2 channels."); st.stop()
-    if len(pick) > 4:
-        pick = pick[:4]
-    st.subheader(f"Compare: {', '.join(pick)}")
-
-    if hourly_time_only.empty:
-        st.info("No data in selected range."); st.stop()
-
-    sub = hourly_time_only[hourly_time_only["channel"].isin(pick)].copy()
-
-    # KPI comparison table
-    st.markdown("### KPI comparison table")
-    kpis = sub.groupby("channel").agg(
-        ROAS=("ROAS","mean"), AOV=("AOV","mean"),
-        CPO=("CPO","mean"), RPV=("RPV","mean"), ORV=("ORV","mean")
-    ).reset_index()
-    st.dataframe(kpis.round(3), use_container_width=True)
-
-    # Diff vs baseline channel
-    base = st.selectbox("Baseline channel", options=pick, index=0)
-    met = st.selectbox("Metric", options=["ROAS","sale","order","budget"], index=0)
-    pivot = sub.pivot_table(index="hour", columns="channel", values=met, aggfunc="sum").sort_index()
-    if base in pivot.columns:
-        rel = (pivot.div(pivot[base], axis=0)-1.0)*100.0
-        fig = go.Figure()
-        for c in rel.columns:
-            if c == base: 
-                continue
-            fig.add_trace(go.Scatter(x=rel.index, y=rel[c], mode="lines+markers", name=f"{c} vs {base}"))
-        fig.update_layout(yaxis_title="% difference", xaxis_title="Hour",
-                          height=420, legend=dict(orientation="h", y=-0.3))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Baseline not in data.")
-
-    st.markdown("### Small multiples (ROAS)")
-    sm = sub.pivot_table(index="hour", columns="channel", values="ROAS", aggfunc="mean").sort_index()
-    fig2 = go.Figure()
-    for c in sm.columns:
-        fig2.add_trace(go.Scatter(x=sm.index, y=sm[c], mode="lines", name=c))
-    fig2.update_layout(height=380, legend=dict(orientation="h", y=-0.3))
-    st.plotly_chart(fig2, use_container_width=True)
+    st.markdown("### Time series table")
+    st.dataframe(ch_df[["hour","sales","orders","ads","ads_ro","sale_ro_row"]].round(3),
+                 use_container_width=True)
