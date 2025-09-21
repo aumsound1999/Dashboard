@@ -1,5 +1,5 @@
-streamlit
-pandas
-numpy
-plotly
-st-aggrid
+streamlit==1.37.1
+pandas==2.2.2
+numpy==1.26.4
+plotly==5.24.0
+streamlit-aggrid==0.3.4.post3
