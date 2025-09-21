@@ -1,7 +1,5 @@
 # app.py
-# Shopee ROAS Dashboard — overview • channel • compare
-# Data from Google Sheet (CSV) via Secrets:
-#   ROAS_CSV_URL = "https://docs.google.com/spreadsheets/d/<ID>/gviz/tq?tqx=out:csv&sheet=<SHEET_NAME>"
+# Shopee ROAS Dashboard — overview • channel • compare (hourly version)
 
 import os, re, io
 import numpy as np
@@ -13,16 +11,16 @@ import requests
 
 st.set_page_config(page_title="Shopee ROAS", layout="wide")
 
-# =========================================================
+# =========================
 # Config
-# =========================================================
-TZ = "Asia/Bangkok"
-BIN = "5min"     # เวลา bin กลางสำหรับ overlay/heatmap (แก้ได้ '1min'/'10min'/'15min')
-RO_CAP = 50.0    # ล็อคค่าสูงสุดสำหรับ RO เส้น/heatmap
+# =========================
+TZ      = "Asia/Bangkok"
+RO_CAP  = 50.0  # cap สำหรับ sale_ro / ads_ro
+HOURS_24 = [f"{h:02d}:00" for h in range(24)]  # 00:00..23:00
 
-# =========================================================
-# Helpers: parse sheet
-# =========================================================
+# =========================
+# Parse Google Sheet
+# =========================
 TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{1,2}\s+\d{1,2}:\d{1,2}$")
 
 def is_time_col(col: str) -> bool:
@@ -41,20 +39,14 @@ def parse_timestamp_from_header(hdr: str, tz: str = TZ) -> pd.Timestamp:
     return ts
 
 def parse_metrics_cell(s: str):
-    """
-    raw string -> [v0..v5]
-    e.g. "2025,12,34,776,22.51,1036" -> [2025,12,34,776,22.51,1036]
-    """
     if not isinstance(s, str) or not re.search(r"\d", s):
         return [np.nan]*6
     s_clean = re.sub(r"[^0-9\.\-,]", "", s)
     parts = [p for p in s_clean.split(",") if p != ""]
     out = []
     for p in parts[:6]:
-        try:
-            out.append(float(p))
-        except:
-            out.append(np.nan)
+        try: out.append(float(p))
+        except: out.append(np.nan)
     while len(out) < 6:
         out.append(np.nan)
     return out
@@ -94,27 +86,23 @@ def wide_to_long(df_wide: pd.DataFrame) -> pd.DataFrame:
             .rename(columns={"name":"channel"})\
             .dropna(subset=["timestamp"]).reset_index(drop=True)
 
-    # mapping ตามข้อมูลที่คุณยืนยัน
-    out["sales"]    = pd.to_numeric(out["v0"], errors="coerce")   # ยอดขายสะสม
-    out["orders"]   = pd.to_numeric(out["v1"], errors="coerce")   # ออเดอร์สะสม
-    out["ads"]      = pd.to_numeric(out["v2"], errors="coerce")   # ค่าโฆษณาสะสม
-    out["view"]     = pd.to_numeric(out["v3"], errors="coerce")   # view สะสม
-    out["ads_ro0"]  = pd.to_numeric(out["v4"], errors="coerce")   # ro ของ ads (จากแหล่งเดิม)
-    out["misc"]     = pd.to_numeric(out["v5"], errors="coerce")
+    # mapping ตามที่ยืนยันกัน
+    out["sales"]   = pd.to_numeric(out["v0"], errors="coerce")   # สะสม
+    out["orders"]  = pd.to_numeric(out["v1"], errors="coerce")   # สะสม
+    out["ads"]     = pd.to_numeric(out["v2"], errors="coerce")   # สะสม (ค่าโฆษณา)
+    out["view"]    = pd.to_numeric(out["v3"], errors="coerce")
+    out["ads_ro0"] = pd.to_numeric(out["v4"], errors="coerce")   # raw ro เดิม (ไม่ได้ใช้แล้วในกราฟ)
+    out["misc"]    = pd.to_numeric(out["v5"], errors="coerce")
 
-    # ช่วย tag วัน/เวลาแบบกลาง
-    out["tbin"] = out["timestamp"].dt.floor(BIN)
-    out["day"]  = out["tbin"].dt.date
-    out["hm"]   = out["tbin"].dt.strftime("%H:%M")  # สำหรับ overlay เส้น
     return out
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_long():
     return wide_to_long(load_wide_df())
 
-# =========================================================
-# KPI snapshot (คงเดิม)
-# =========================================================
+# =========================
+# KPI snapshot เหมือนเดิม
+# =========================
 def pick_snapshot_at(df: pd.DataFrame, at_ts: pd.Timestamp) -> pd.DataFrame:
     if df.empty:
         return df
@@ -138,12 +126,11 @@ def current_and_yesterday_snapshots(df: pd.DataFrame):
 def kpis_from_snapshot(snap: pd.DataFrame):
     if snap.empty:
         return dict(Sales=0, Orders=0, Ads=0, SaleRO=np.nan, AdsRO_avg=np.nan)
-    sales = snap["sales"].sum()
-    orders= snap["orders"].sum()
-    ads   = snap["ads"].sum()
+    sales  = snap["sales"].sum()
+    orders = snap["orders"].sum()
+    ads    = snap["ads"].sum()
     sale_ro = (sales/ads) if ads else np.nan
-    ads_ro_vals = snap["ads_ro0"]
-    ads_ro_avg = ads_ro_vals[ads_ro_vals>0].mean()
+    ads_ro_avg = snap["ads_ro0"][snap["ads_ro0"]>0].mean()
     return dict(Sales=sales, Orders=orders, Ads=ads, SaleRO=sale_ro, AdsRO_avg=ads_ro_avg)
 
 def pct_delta(curr, prev):
@@ -151,78 +138,60 @@ def pct_delta(curr, prev):
     if curr is None or pd.isna(curr):      return None
     return (curr - prev) * 100.0 / prev
 
-# =========================================================
-# Overlay & Heatmap builders (แก้ปัญหาเส้นมั่ว/NaN)
-# =========================================================
-def _aggregate_to_bins(d: pd.DataFrame, chs: list) -> pd.DataFrame:
-    """ รวมทุกช่องต่อ tbin (BIN=5min) แล้วได้ค่าสะสมรวม/นาที """
+# =========================
+# Hourly overlay & heatmap
+# =========================
+def _hourly_latest_agg(d: pd.DataFrame, chs: list) -> pd.DataFrame:
+    """สแนปช็อตล่าสุดต่อชั่วโมง/ช่อง แล้วรวมทุกช่องเป็นรายชั่วโมง/วัน"""
     sub = d[d["channel"].isin(chs)].copy()
-    if sub.empty: 
-        return sub
+    if sub.empty:
+        return pd.DataFrame()
 
-    # เลือก "สแนปช็อตล่าสุดของแต่ละช่องในแต่ละ tbin"
-    sub = sub.sort_values("timestamp").groupby(["channel","tbin"]).tail(1)
+    sub["hour"] = sub["timestamp"].dt.floor("H")
+    sub["day"]  = sub["hour"].dt.date
+    sub["hh"]   = sub["hour"].dt.strftime("%H:00")
 
-    # รวมทุกช่องในแต่ละ tbin (ได้ค่าสะสมรวม ณ ขณะนั้น)
-    agg = sub.groupby(["day","tbin"], as_index=False).agg(
+    # เลือกข้อมูลล่าสุดของแต่ละ channel+hour
+    latest = sub.sort_values("timestamp").groupby(["channel","hour"]).tail(1)
+
+    # รวมทุกช่องในแต่ละ hour
+    agg = latest.groupby(["day","hour","hh"], as_index=False).agg(
         sales=("sales","sum"),
         orders=("orders","sum"),
         ads=("ads","sum"),
-        ads_sales=("sales","sum"),    # ใช้ขายจาก ads = จะใช้สำหรับ ads_ro ใน diff
-        ads_spend=("ads","sum")
     )
-    # ทำ index ช่วงเวลามาตรฐานทั้งวัน (bins 5 นาที) แล้ว reindex ให้ตรงกันทุกวัน
-    full = []
-    for day, g in agg.groupby("day"):
-        idx = pd.date_range(
-            start=pd.Timestamp(year=g["tbin"].dt.year.min(),
-                               month=g["tbin"].dt.month.min(),
-                               day=pd.Timestamp(day).day,
-                               tz=TZ).floor("D"),
-            end  = pd.Timestamp(year=g["tbin"].dt.year.min(),
-                               month=g["tbin"].dt.month.min(),
-                               day=pd.Timestamp(day).day,
-                               tz=TZ).floor("D")+pd.Timedelta(days=1),
-            freq=BIN, inclusive="left"
-        )
-        gg = g.set_index("tbin").reindex(idx)
-        gg["day"] = day
-        gg.index.name = "tbin"
-        full.append(gg.reset_index())
-    agg2 = pd.concat(full, ignore_index=True)
+    # ads_sales/ads_spend สำหรับ ads_ro
+    agg["ads_sales"]  = agg["sales"]
+    agg["ads_spend"]  = agg["ads"]
+    return agg
 
-    # คอลัมน์ช่วย
-    agg2["hm"] = agg2["tbin"].dt.strftime("%H:%M")
-    return agg2
+def _diff_clip_nonneg(ser: pd.Series, by: pd.Series) -> pd.Series:
+    v = ser.groupby(by).diff()
+    v = v.clip(lower=0)            # กันค่าติดลบ
+    v = v.groupby(by).ffill()       # กันเส้นขาด
+    return v
 
-def _diff_clip_nonneg_in_day(ser: pd.Series, by_day: pd.Series) -> pd.Series:
-    """ diff ภายในวัน แล้ว clip(>=0) และ ffill"""
-    val = ser.groupby(by_day).diff().clip(lower=0)
-    return val.groupby(by_day).ffill()
-
-def build_overlay_by_day(d: pd.DataFrame, metric: str, chs: list) -> pd.DataFrame:
+def build_overlay_by_day_hour(d: pd.DataFrame, metric: str, chs: list) -> pd.DataFrame:
     """
-    คืนตาราง overlay index=hm (ช่วงเวลา), columns=day, values คือค่าที่ต้อง plot
-    - sales/orders/ads : ใช้ Δใน BIN (5 นาที) แบบ clip>=0
-    - sale_ro          : (Δsales)/(Δads)  cap<=RO_CAP  ffill ในวัน
-    - ads_ro           : (Δads_sales)/(Δads_spend) cap<=RO_CAP ffill ในวัน
+    คืน pivot index=hh(00:00..23:00), columns=day, values=metric
+    - sales/orders/ads -> Δ ต่อชั่วโมง (ไม่ติดลบ)
+    - sale_ro -> (Δsales/Δads) cap 50
+    - ads_ro  -> (Δads_sales/Δads_spend) cap 50
     """
-    agg = _aggregate_to_bins(d, chs)
-    if agg.empty: 
+    agg = _hourly_latest_agg(d, chs)
+    if agg.empty:
         return pd.DataFrame()
 
-    # Δ ข้างล่างนี้ “ภายในวัน”
-    ds = _diff_clip_nonneg_in_day(agg["sales"],  agg["day"])
-    do = _diff_clip_nonneg_in_day(agg["orders"], agg["day"])
-    da = _diff_clip_nonneg_in_day(agg["ads"],    agg["day"])
+    ds = _diff_clip_nonneg(agg["sales"],  agg["day"])
+    do = _diff_clip_nonneg(agg["orders"], agg["day"])
+    da = _diff_clip_nonneg(agg["ads"],    agg["day"])
 
-    # RO ตามนิยามใหม่
-    sale_ro = (ds / da.replace(0,np.nan)).clip(upper=RO_CAP)
+    sale_ro = (ds / da.replace(0, np.nan)).clip(upper=RO_CAP)
     sale_ro = sale_ro.groupby(agg["day"]).ffill()
 
-    ads_sales_delta = _diff_clip_nonneg_in_day(agg["ads_sales"], agg["day"])
-    ads_spend_delta = _diff_clip_nonneg_in_day(agg["ads_spend"], agg["day"])
-    ads_ro = (ads_sales_delta / ads_spend_delta.replace(0,np.nan)).clip(upper=RO_CAP)
+    ads_sales_delta = _diff_clip_nonneg(agg["ads_sales"], agg["day"])
+    ads_spend_delta = _diff_clip_nonneg(agg["ads_spend"], agg["day"])
+    ads_ro = (ads_sales_delta / ads_spend_delta.replace(0, np.nan)).clip(upper=RO_CAP)
     ads_ro = ads_ro.groupby(agg["day"]).ffill()
 
     if   metric == "sales" : use = ds
@@ -230,39 +199,31 @@ def build_overlay_by_day(d: pd.DataFrame, metric: str, chs: list) -> pd.DataFram
     elif metric == "ads"   : use = da
     elif metric == "sale_ro": use = sale_ro
     elif metric == "ads_ro" : use = ads_ro
-    else: raise ValueError("unknown metric")
+    else:
+        raise ValueError("Unknown metric")
 
-    Z = pd.DataFrame({"hm": agg["hm"], "day": agg["day"], "val": use})
-    piv = Z.pivot_table(index="hm", columns="day", values="val", aggfunc="last").sort_index()
+    Z = pd.DataFrame({"hh": agg["hh"], "day": agg["day"], "val": use})
+    piv = Z.pivot_table(index="hh", columns="day", values="val", aggfunc="last")
+    piv = piv.reindex(HOURS_24)  # ให้ครบ 00..23 ทุกวัน
     return piv
 
-def build_heatmap_matrix(d: pd.DataFrame, metric: str, chs: list) -> pd.DataFrame:
-    """ เหมือน overlay แต่แปลงเป็นตาราง day x hour สำหรับ heatmap """
-    piv = build_overlay_by_day(d, metric, chs)
+def build_heatmap_hourly(d: pd.DataFrame, metric: str, chs: list) -> pd.DataFrame:
+    """คืนตาราง day x hour สำหรับ heatmap (ใช้ค่าเดียวกับ overlay เพื่อให้ตรงกัน)"""
+    piv = build_overlay_by_day_hour(d, metric, chs)
     if piv.empty:
         return piv
-    # รวมเป็นรายชั่วโมงสำหรับ heatmap (sum ของ 12 bins * 5min)
-    # RO ใช้ค่าเฉลี่ยในชั่วโมงแทน
-    hm = piv.copy()
-    hm.index = pd.to_datetime(hm.index, format="%H:%M")
-    if metric in ("sale_ro","ads_ro"):
-        H = hm.resample("1H").mean()
-    else:
-        H = hm.resample("1H").sum(min_count=1)
-    # Plotly imshow ต้องการ index เป็นวันที่ (ใหม่→บน หรือใต้แล้วแต่ theme)
-    H.index = H.index.strftime("%H:%M")
-    return H.T  # rows=day, cols=hour
+    return piv.T  # rows=day, cols=hour
 
-# =========================================================
+# =========================
 # UI
-# =========================================================
+# =========================
 st.sidebar.header("Filters")
 if st.sidebar.button("Reload", use_container_width=True):
     fetch_csv_text.clear(); load_wide_df.clear(); get_long.clear()
     st.experimental_rerun()
 
 df_long = get_long()
-now_ts = pd.Timestamp.now(tz=TZ)
+now_ts  = pd.Timestamp.now(tz=TZ)
 
 min_ts = df_long["timestamp"].min()
 max_ts = df_long["timestamp"].max()
@@ -289,8 +250,8 @@ else:
 page = st.sidebar.radio("Page", ["Overview","Channel","Compare"])
 
 mask = (
-    (df_long["timestamp"] >= start_ts) & 
-    (df_long["timestamp"] <= end_ts)   &
+    (df_long["timestamp"] >= start_ts) &
+    (df_long["timestamp"] <= end_ts) &
     (df_long["channel"].isin(selected_channels))
 )
 d = df_long.loc[mask].copy()
@@ -298,13 +259,14 @@ d = df_long.loc[mask].copy()
 st.title("Shopee ROAS Dashboard")
 st.caption(f"Last refresh: {now_ts.strftime('%Y-%m-%d %H:%M:%S')}")
 
-# =========================================================
+# =========================
 # Overview
-# =========================================================
+# =========================
 if page == "Overview":
     st.subheader("Overview (All selected channels)")
     if d.empty:
-        st.warning("No data in selected period."); st.stop()
+        st.warning("No data in selected period.")
+        st.stop()
 
     cur_snap, y_snap, cur_hour = current_and_yesterday_snapshots(d)
     cur  = kpis_from_snapshot(cur_snap)
@@ -322,25 +284,25 @@ if page == "Overview":
 
     st.markdown("### Trend overlay by day")
     metric = st.selectbox("Metric to plot (เลือกได้ 1 ค่า)", options=["sales","orders","ads","sale_ro","ads_ro"], index=0)
-    piv = build_overlay_by_day(d, metric, selected_channels)
+    piv = build_overlay_by_day_hour(d, metric, selected_channels)
     if piv.empty:
         st.info("No data to plot.")
     else:
         fig = go.Figure()
         for day in piv.columns:
-            fig.add_trace(go.Scatter(x=piv.index, y=piv[day], mode="lines+markers", name=str(day)))
-        fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=metric)
+            fig.add_trace(go.Scatter(x=piv.index, y=piv[day], name=str(day), mode="lines+markers"))
+        fig.update_layout(height=420, xaxis_title="Hour", yaxis_title=metric)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Prime hours heatmap")
-    H = build_heatmap_matrix(d, metric, selected_channels)
+    H = build_heatmap_hourly(d, metric, selected_channels)
     if not H.empty:
         fig_h = px.imshow(H, aspect="auto", labels=dict(x="Hour", y="Day", color=metric))
         st.plotly_chart(fig_h, use_container_width=True)
 
-# =========================================================
-# Channel (โครง/ตารางคงเดิม — ไม่แตะกรอบเดิมมาก)
-# =========================================================
+# =========================
+# Channel
+# =========================
 elif page == "Channel":
     ch = st.selectbox("Pick one channel", options=all_channels, index=0)
     ch_df = df_long[
@@ -351,7 +313,6 @@ elif page == "Channel":
     if ch_df.empty:
         st.warning("No data for this channel in selected period."); st.stop()
 
-    # KPIs เหมือนเดิม
     cur_snap, y_snap, cur_hour = current_and_yesterday_snapshots(ch_df)
     cur  = kpis_from_snapshot(cur_snap)
     prev = kpis_from_snapshot(y_snap)
@@ -366,28 +327,25 @@ elif page == "Channel":
                 f"{pct_delta(cur['AdsRO_avg'], prev['AdsRO_avg']):+.1f}%" if not pd.isna(prev["AdsRO_avg"]) else None)
     st.caption(f"Snapshot hour: {cur_hour}")
 
-    # เส้น overlay แบบช่องเดียว (เลือก metric)
     st.markdown("### Trend overlay by day (channel)")
     met = st.selectbox("Metric to plot (channel):", ["sales","orders","ads","sale_ro","ads_ro"], index=0)
-    piv = build_overlay_by_day(ch_df, met, [ch])
+    piv = build_overlay_by_day_hour(ch_df, met, [ch])
     if not piv.empty:
         fig = go.Figure()
         for day in piv.columns:
-            fig.add_trace(go.Scatter(x=piv.index, y=piv[day], mode="lines+markers", name=str(day)))
-        fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=met)
+            fig.add_trace(go.Scatter(x=piv.index, y=piv[day], name=str(day), mode="lines+markers"))
+        fig.update_layout(height=420, xaxis_title="Hour", yaxis_title=met)
         st.plotly_chart(fig, use_container_width=True)
 
-    # ตารางรายเวลา (ใช้ค่า Δ เช่นเดียวกับกราฟ เพื่อสอดคล้องกัน)
-    H = build_heatmap_matrix(ch_df, met, [ch])
+    st.markdown("### Time series table (hourly)")
+    H = build_heatmap_hourly(ch_df, met, [ch])
     if not H.empty:
-        st.markdown("### Time series table")
-        # แปลงกลับเป็น long เพื่อแสดง
-        show = H.T.reset_index().melt(id_vars="index", var_name="day", value_name=met).rename(columns={"index":"hour"})
-        st.dataframe(show, use_container_width=True, height=360)
+        tbl = H.reset_index().melt(id_vars="index", var_name="hour", value_name=met).rename(columns={"index":"day"})
+        st.dataframe(tbl, use_container_width=True, height=360)
 
-# =========================================================
-# Compare (โครงเดิม)
-# =========================================================
+# =========================
+# Compare (คงโครงง่าย ๆ)
+# =========================
 else:
     picks = st.multiselect("Pick 2–4 channels", options=all_channels, default=all_channels[:2], max_selections=4)
     if len(picks) < 2:
@@ -403,16 +361,14 @@ else:
 
     st.subheader(f"Compare: {', '.join(picks)}")
 
-    # ใช้ ROAS ใหม่เทียบแบบ % ต่างจาก baseline
-    piv = build_overlay_by_day(sub, "sale_ro", picks)
+    piv = build_overlay_by_day_hour(sub, "sale_ro", picks)
     if not piv.empty:
         base = st.selectbox("Baseline day", options=list(piv.columns), index=0)
-        # สร้าง %diff ต่อเวลา
         rel = (piv.div(piv[base], axis=0) - 1.0) * 100.0
         fig = go.Figure()
         for c in rel.columns:
             if c == base: 
                 continue
             fig.add_trace(go.Scatter(x=rel.index, y=rel[c], name=f"{c} vs {base}", mode="lines+markers"))
-        fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title="% difference")
+        fig.update_layout(height=420, xaxis_title="Hour", yaxis_title="% difference")
         st.plotly_chart(fig, use_container_width=True)
