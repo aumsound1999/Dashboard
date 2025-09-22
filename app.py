@@ -138,8 +138,9 @@ def parse_metrics_cell(s: str):
 
 def parse_campaign_details(campaign_string: str):
     """
-    CRITICAL FIX: เขียน Logic ใหม่ทั้งหมดให้เรียบง่ายและแม่นยำ
-    จะดึงข้อมูลเฉพาะแคมเปญที่มีรายละเอียดครบถ้วน (ยาวกว่า 6 elements) เท่านั้น
+    CRITICAL FIX 2: Re-written with a more robust logic to identify real campaigns.
+    A campaign is identified if its ID contains an underscore ('_').
+    This correctly separates campaign data from status indicators like 'gmvus2.0'.
     """
     if not isinstance(campaign_string, str):
         return []
@@ -149,23 +150,25 @@ def parse_campaign_details(campaign_string: str):
         parsed_data = []
         
         for item in campaign_list:
-            # เงื่อนไขสำคัญ: ตรวจสอบว่าเป็น list และมีข้อมูลตัวเลขครบถ้วน
-            if isinstance(item, list) and len(item) > 6:
+            # A real campaign is a list, with a string ID that contains an underscore.
+            if isinstance(item, list) and len(item) > 0 and isinstance(item[0], str) and '_' in item[0]:
                 try:
+                    # Safely extract metrics, providing defaults if they don't exist.
                     campaign_details = {
                         "id": item[0],
-                        "budget": item[1],
-                        "orders": item[3],
-                        "sales": item[5],
-                        "roas": item[6],
+                        "budget": item[1] if len(item) > 1 else np.nan,
+                        "orders": item[3] if len(item) > 3 else np.nan,
+                        "sales": item[5] if len(item) > 5 else np.nan,
+                        "roas": item[6] if len(item) > 6 else np.nan,
                     }
                     parsed_data.append(campaign_details)
                 except (IndexError, TypeError):
-                    # ข้ามชุดข้อมูลที่ผิดพลาดภายใน
+                    # Fallback for just the ID if something is wrong with the metrics
+                    parsed_data.append({"id": item[0], "budget": np.nan, "orders": np.nan, "sales": np.nan, "roas": np.nan})
                     continue
         return parsed_data
     except (ValueError, SyntaxError):
-        # จัดการกรณีที่ string ไม่ใช่รูปแบบ list ที่ถูกต้อง (เช่น "ไม่มีแอด")
+        # Handle cases where the string is not a valid Python literal
         return []
 
 # -----------------------------------------------------------------------------
