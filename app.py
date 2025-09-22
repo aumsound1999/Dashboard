@@ -139,8 +139,9 @@ def parse_metrics_cell(s: str):
 def parse_campaign_details(campaign_string: str):
     """
     NEW: แยกวิเคราะห์ข้อมูลแคมเปญจาก string ที่ซับซ้อน
+    FIX: แก้ไขเงื่อนไขการตรวจสอบ "ไม่มีแอด" ที่ผิดพลาด
     """
-    if not isinstance(campaign_string, str) or "ไม่มีแอด" in campaign_string:
+    if not isinstance(campaign_string, str):
         return []
 
     try:
@@ -166,7 +167,7 @@ def parse_campaign_details(campaign_string: str):
                     continue
         return parsed_data
     except (ValueError, SyntaxError):
-        # Handle cases where the string is not a valid Python literal
+        # Handle cases where the string is not a valid Python literal (e.g., "ไม่มีแอดที่เปิด")
         return []
 
 # -----------------------------------------------------------------------------
@@ -537,7 +538,7 @@ def main():
                 st.info("No active campaign data found in the latest snapshot.")
             else:
                 campaign_df = pd.DataFrame(campaign_rows)
-                st.dataframe(campaign_df, use_container_width=True)
+                st.dataframe(campaign_df.sort_values("ROAS", ascending=False), use_container_width=True)
 
         
     elif page == "Channel":
