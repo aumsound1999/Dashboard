@@ -1,6 +1,11 @@
 # app.py
-# Final version based on user-provided stable code, with the Campaign Performance Summary added correctly.
+# Shopee ROAS Dashboard — Overview • Channel • Compare
+# อ่านข้อมูลจาก Google Sheet (CSV export) ผ่าน Secrets:
+#    ROAS_CSV_URL="https://docs.google.com/spreadsheets/d/<ID>/gviz/tqx=out:csv&sheet=<SHEET>"
+#
+# pip: streamlit pandas numpy plotly requests
 
+import os
 import io
 import re
 import ast
@@ -22,15 +27,21 @@ V_COLUMNS = [f"v{i}" for i in range(len(METRIC_COLUMNS))]
 # Helpers: detect & parse
 # -----------------------------------------------------------------------------
 
-TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{1,2}\s+\d{1,2}:\d{1,2}$")
+TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{1,2}\s+\d{1,2}:\d{1,2}$")  # e.g., D21 12:45
 
 def is_time_col(col: str) -> bool:
     return isinstance(col, str) and TIME_COL_PATTERN.match(col.strip()) is not None
 
 def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") -> dict:
+    """
+    CRITICAL FIX: แก้ไข Logic การอ่านเวลาให้ถูกต้องตามโครงสร้างไฟล์
+    - ยึดคอลัมน์เวลา 'แรกสุด' (ซ้ายสุด) เป็นข้อมูลล่าสุด
+    - คำนวณเวลาย้อนหลังไปยังคอลัมน์ทางขวา
+    """
     timestamps = {}
     now = pd.Timestamp.now(tz=tz)
     
+    # Get only the columns that match the time format, in their original order
     time_cols_only = [h for h in headers if is_time_col(h)]
     if not time_cols_only:
         return {h: pd.NaT for h in headers}
@@ -38,6 +49,7 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
     temp_timestamps = {}
     previous_ts = pd.NaT
 
+    # Iterate FORWARDS through the time columns, as the first one is the latest
     for hdr in time_cols_only:
         hdr_strip = hdr.strip()
         m = re.match(r"^[A-Z](\d{1,2})\s+(\d{1,2}):(\d{1,2})$", hdr_strip)
@@ -47,8 +59,11 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
         d, hh, mm = map(int, m.groups())
         
         if pd.isna(previous_ts):
+            # ANCHORING LOGIC: This runs only for the very first time column found
+            # Assume its day number 'd' refers to a date at or before 'now'.
+            # Start with today and go backwards until we find a matching day number.
             anchor_date_candidate = now
-            for _ in range(45):
+            for _ in range(45):  # Safety break after 45 days
                 if anchor_date_candidate.day == d:
                     break
                 anchor_date_candidate -= pd.Timedelta(days=1)
@@ -64,13 +79,20 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
                 temp_timestamps[hdr] = pd.NaT
 
         else:
+            # ITERATION LOGIC: For all subsequent (older) time columns
             try:
+                # Tentatively create a timestamp using the year/month of the previous (newer) data point
                 ts = pd.Timestamp(year=previous_ts.year, month=previous_ts.month, day=d, hour=hh, minute=mm, tz=tz)
+                
+                # The current timestamp must be EARLIER than the previous one.
+                # If it's not, it means we've crossed a month boundary going backwards in time.
                 if ts >= previous_ts:
                     ts -= pd.DateOffset(months=1)
+                
                 temp_timestamps[hdr] = ts
                 previous_ts = ts
             except ValueError:
+                # This can happen if a day 'd' doesn't exist in the guessed month (e.g. 31 in Feb)
                 try:
                     prev_month_date = previous_ts - pd.DateOffset(months=1)
                     ts = pd.Timestamp(year=prev_month_date.year, month=prev_month_date.month, day=d, hour=hh, minute=mm, tz=tz)
@@ -79,6 +101,7 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
                 except ValueError:
                     temp_timestamps[hdr] = pd.NaT
 
+    # Map the parsed timestamps back to the full list of original headers
     for hdr in headers:
         timestamps[hdr] = temp_timestamps.get(hdr, pd.NaT)
         
@@ -86,14 +109,20 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
 
 
 def parse_metrics_cell(s: str):
+    """
+    FIX: ทำให้การ parse ข้อมูลมีความแม่นยำมากขึ้น โดยจัดการกับค่าที่หายไป (,,) ได้ถูกต้อง
+    """
     if not isinstance(s, str):
         return [np.nan] * 6
     
     s_clean = re.sub(r"[^0-9\.\-,]", "", s)
+    # ไม่ลบ empty string ออก เพื่อรักษาตำแหน่งของข้อมูล
     parts = s_clean.split(",")
     nums = []
     
+    # วนลูปตามจำนวนค่าที่คาดหวัง (6 ค่า)
     for p in parts[:6]:
+        # แปลงค่าว่างให้เป็น NaN
         if p.strip() == "":
             nums.append(np.nan)
             continue
@@ -102,13 +131,14 @@ def parse_metrics_cell(s: str):
         except (ValueError, TypeError):
             nums.append(np.nan)
     
+    # เติม NaN หากข้อมูลที่มาสั้นกว่า 6 ค่า
     while len(nums) < 6:
         nums.append(np.nan)
     return nums
 
 def parse_campaign_details(campaign_string: str):
     """
-    FINAL ROBUST LOGIC:
+    CRITICAL FIX 3: Re-written with a more robust logic based on data structure.
     A real campaign with performance data is a list with more than 6 elements.
     This correctly filters out status-only indicators like ['gmvus2.0'].
     """
@@ -120,22 +150,24 @@ def parse_campaign_details(campaign_string: str):
         parsed_data = []
         
         for item in campaign_list:
+            # A real campaign is a list with detailed metrics (len > 6)
             if isinstance(item, list) and len(item) > 6:
                 try:
+                    # Safely extract metrics
                     details = {
-                        "Campaign ID": item[0],
-                        "Budget": item[1],
-                        "Ads Spent": item[2],
-                        "Orders": item[3],
-                        "View": item[4],
-                        "Sales": item[5],
-                        "ROAS": item[6],
+                        "id": item[0],
+                        "budget": item[1],
+                        "orders": item[3],
+                        "sales": item[5],
+                        "roas": item[6],
                     }
                     parsed_data.append(details)
                 except (IndexError, TypeError):
+                    # Skip malformed inner lists that initially looked correct
                     continue
         return parsed_data
     except (ValueError, SyntaxError):
+        # Handle cases where the string is not a valid Python literal
         return []
 
 # -----------------------------------------------------------------------------
@@ -157,6 +189,7 @@ def load_wide_df():
     return pd.read_csv(io.StringIO(csv_text))
 
 def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
+    # IMPROVEMENT: Automatically detect all ID columns before the first time column
     first_time_col_index = -1
     for i, col in enumerate(df_wide.columns):
         if is_time_col(str(col)):
@@ -180,11 +213,12 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
 
     V = pd.DataFrame(m["raw"].apply(parse_metrics_cell).tolist(), columns=V_COLUMNS)
     
+    # Build rename dictionary for known and potential ID columns
     rename_dict = {}
     if len(id_cols) > 0:
-        rename_dict[id_cols[0]] = 'channel'
+        rename_dict[id_cols[0]] = 'channel' # Assume first is always channel
     if len(id_cols) > 1:
-        rename_dict[id_cols[1]] = 'campaign'
+        rename_dict[id_cols[1]] = 'campaign' # Assume second is campaign
 
     out = pd.concat([m[["timestamp"] + id_cols], V], axis=1).rename(columns=rename_dict)
     out = out.dropna(subset=["timestamp"]).reset_index(drop=True)
@@ -240,6 +274,10 @@ def current_and_yesterday_snapshots(df: pd.DataFrame, tz="Asia/Bangkok"):
     return cur_snap, y_snap, cur_ts.floor("H")
 
 def kpis_from_snapshot(snap: pd.DataFrame):
+    """
+    FIX: Ensure all returned values are scalar floats to prevent type errors
+    in downstream formatting, especially in edge cases with single-row dataframes.
+    """
     if snap.empty:
         return dict(Sales=0.0, Orders=0.0, Ads=0.0, SaleRO=np.nan, AdsRO_avg=np.nan)
     
@@ -250,6 +288,8 @@ def kpis_from_snapshot(snap: pd.DataFrame):
     sale_ro = (sales / ads) if ads != 0 else np.nan
     
     ads_ro_vals = snap["ads_ro_raw"]
+    # .mean() on an empty series gives nan, which is a float.
+    # We cast to float() as a safeguard against any non-scalar return types.
     ads_ro_avg = float(ads_ro_vals[ads_ro_vals > 0].mean())
     
     return dict(Sales=sales, Orders=orders, Ads=ads, SaleRO=sale_ro, AdsRO_avg=ads_ro_avg)
@@ -270,6 +310,9 @@ def hourly_latest(df: pd.DataFrame, tz="Asia/Bangkok"):
     return d.reset_index(drop=True)
 
 def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
+    """
+    IMPROVEMENT: เพิ่มการคำนวณ 'sale_day' (ยอดขายสะสม)
+    """
     if df.empty:
         return pd.DataFrame(columns=df.columns.tolist() + ["hour_key", "day", "hstr", "_val"])
 
@@ -281,19 +324,21 @@ def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
         diff_col = H.groupby("channel")[metric].transform(diff_func)
         H["_val"] = diff_col.fillna(0.0)
     elif metric == "sale_day":
+        # 'sale_day' shows the cumulative sales value at that hour
         H["_val"] = H["sales"].fillna(0.0)
     elif metric == "sale_ro":
         ds = H.groupby("channel")["sales"].transform(diff_func).fillna(0.0)
         da = H.groupby("channel")["ads"].transform(diff_func).fillna(0.0).replace(0, np.nan)
         ro = ds / da
-        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50)
+        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50) # Cap at 50 to prevent extreme values
         H["_val"] = ro.fillna(0.0)
     elif metric == "ads_ro":
+        # NEW LOGIC: Calculate true hourly incremental ROAS from ad spend.
         H['sales_from_ads'] = H['ads'] * H['ads_ro_raw']
         ds_from_ads = H.groupby("channel")['sales_from_ads'].transform(diff_func).fillna(0.0)
         da = H.groupby("channel")["ads"].transform(diff_func).fillna(0.0).replace(0, np.nan)
         ro = ds_from_ads / da
-        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50)
+        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50) # Cap at 50
         H["_val"] = ro.fillna(0.0)
     else:
         H["_val"] = 0.0
@@ -302,6 +347,9 @@ def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     return H
 
 def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
+    """
+    FIX: ใช้ aggfunc='mean' สำหรับ ROAS metrics เพื่อไม่ให้ค่าในกราฟสูงผิดปกติ
+    """
     H_with_vals = calculate_hourly_values(df, metric, tz)
     if H_with_vals.empty:
         return pd.DataFrame()
