@@ -137,16 +137,18 @@ def parse_metrics_cell(s: str):
 
 def count_active_campaigns(campaign_string: str) -> int:
     """
-    CRITICAL FIX: แก้ไข logic การนับให้แม่นยำขึ้น
-    โดยจะนับเฉพาะ pattern ของแอดที่เปิดอยู่ และไม่สนใจข้อความ 'ไม่มีแอด'
+    CRITICAL FIX 2: แก้ไข logic การนับให้แม่นยำขึ้น
+    จากการตรวจสอบข้อมูลจริง แคมเปญที่เปิดอยู่จะถูกระบุด้วย pattern 'gmv_', 'ro_' หรือ 'a_'
     """
     if not isinstance(campaign_string, str):
         return 0
-    # The string "ไม่มีแอดที่เปิด" can coexist with active campaign data.
-    # The reliable way is to count patterns that indicate an active ad.
-    # Pattern: 'gmvus' followed by a non-zero digit [1-9].
-    active_patterns = re.findall(r"gmvus[1-9]", campaign_string)
-    return len(active_patterns)
+    
+    # Count occurrences of known active campaign patterns, looking for them as distinct string literals
+    gmv_campaigns = campaign_string.count("'gmv_")
+    ro_campaigns = campaign_string.count("'ro_")
+    a_campaigns = campaign_string.count("'a_")
+    
+    return gmv_campaigns + ro_campaigns + a_campaigns
 
 # -----------------------------------------------------------------------------
 # Loaders
