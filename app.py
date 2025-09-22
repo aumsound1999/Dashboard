@@ -138,8 +138,8 @@ def parse_metrics_cell(s: str):
 
 def parse_campaign_details(campaign_string: str):
     """
-    NEW: แยกวิเคราะห์ข้อมูลแคมเปญจาก string ที่ซับซ้อน
-    FIX: แก้ไขให้สามารถดึงข้อมูลแคมเปญทุกประเภทได้
+    CRITICAL FIX: เขียน Logic ใหม่ทั้งหมดให้เรียบง่ายและแม่นยำ
+    จะดึงข้อมูลเฉพาะแคมเปญที่มีรายละเอียดครบถ้วน (ยาวกว่า 6 elements) เท่านั้น
     """
     if not isinstance(campaign_string, str):
         return []
@@ -149,36 +149,23 @@ def parse_campaign_details(campaign_string: str):
         parsed_data = []
         
         for item in campaign_list:
-            if isinstance(item, list) and len(item) > 0:
-                campaign_id = item[0]
-
-                # กรองข้อความอธิบายที่ไม่ใช่ ID แคมเปญ (สมมติว่า ID เป็น ASCII)
-                if not isinstance(campaign_id, str) or not campaign_id.isascii():
+            # เงื่อนไขสำคัญ: ตรวจสอบว่าเป็น list และมีข้อมูลตัวเลขครบถ้วน
+            if isinstance(item, list) and len(item) > 6:
+                try:
+                    campaign_details = {
+                        "id": item[0],
+                        "budget": item[1],
+                        "orders": item[3],
+                        "sales": item[5],
+                        "roas": item[6],
+                    }
+                    parsed_data.append(campaign_details)
+                except (IndexError, TypeError):
+                    # ข้ามชุดข้อมูลที่ผิดพลาดภายใน
                     continue
-
-                campaign_details = {
-                    "id": campaign_id,
-                    "budget": np.nan,
-                    "orders": np.nan,
-                    "sales": np.nan,
-                    "roas": np.nan,
-                }
-                
-                # ตรวจสอบว่ามีข้อมูลตัวเลข chi tiết หรือไม่ (ต้องมีอย่างน้อย 7 elements)
-                if len(item) > 6:
-                    try:
-                        campaign_details.update({
-                            "budget": item[1],
-                            "orders": item[3],
-                            "sales": item[5],
-                            "roas": item[6],
-                        })
-                    except (IndexError, TypeError):
-                        pass # หาก parse ผิดพลาด ก็ให้ใช้ ID ที่มีค่า NaN ไป
-                
-                parsed_data.append(campaign_details)
         return parsed_data
     except (ValueError, SyntaxError):
+        # จัดการกรณีที่ string ไม่ใช่รูปแบบ list ที่ถูกต้อง (เช่น "ไม่มีแอด")
         return []
 
 # -----------------------------------------------------------------------------
