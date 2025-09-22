@@ -91,18 +91,27 @@ def parse_metrics_cell(s: str):
     return nums
 
 def extract_campaign_details(campaign_string: str) -> list:
-    if not isinstance(campaign_string, str): return []
+    """
+    FINAL ROBUST LOGIC v2:
+    Extracts the full performance data for each real campaign.
+    A real campaign is a list with at least 7 elements (ID + 6 metrics).
+    """
+    if not isinstance(campaign_string, str):
+        return []
+
     try:
         campaign_list = ast.literal_eval(campaign_string)
         parsed_data = []
-        if not isinstance(campaign_list, list): return []
+        if not isinstance(campaign_list, list):
+            return []
+        
         for item in campaign_list:
             if isinstance(item, list) and len(item) > 6:
                 try:
                     details = {
                         "Campaign ID": item[0],
                         "Budget": item[1],
-                        "Ads Spent": item[2],
+                        "Ads Spent": item[2], # เงินที่ใช้
                         "Orders": item[3],
                         "View": item[4],
                         "Sales": item[5],
