@@ -31,32 +31,19 @@ def fetch_csv_text():
 
 def count_active_campaigns(campaign_string: str) -> int:
     """
-    NEW ROBUST LOGIC:
-    Parses the complex campaign string to count only the real, active campaigns.
-    A real campaign is identified as a list containing detailed performance metrics (len > 6).
-    This correctly ignores status indicators (e.g., ['gmvus2.0']) and plain text.
+    CRITICAL FIX: Using a more robust Regex method.
+    The previous method `ast.literal_eval` was too strict and failed on minor
+    text formatting inconsistencies. This new method searches for the PATTERN
+    of a campaign (a list with at least 6 commas) which is more reliable.
     """
     if not isinstance(campaign_string, str):
         return 0
-
-    try:
-        # Safely evaluate the string as a Python literal (e.g., "['a', ['b']]" -> ['a', ['b']])
-        campaign_list = ast.literal_eval(campaign_string)
-        
-        # If it's not a list, it's not valid campaign data
-        if not isinstance(campaign_list, list):
-            return 0
-            
-        count = 0
-        for item in campaign_list:
-            # A real campaign with performance data is a list with more than 6 elements.
-            if isinstance(item, list) and len(item) > 6:
-                count += 1
-        return count
-    except (ValueError, SyntaxError):
-        # This handles cases where the string is not a valid list format,
-        # like "ไม่มีแอดที่เปิด" (No ads open).
-        return 0
+    
+    # This regex finds patterns that look like a list `[...]` containing at least 6 commas.
+    # This is the most reliable signature of a campaign with performance data.
+    # `[^\[\]]*` matches any character except brackets, to contain the search within one list item.
+    matches = re.findall(r"\[[^\[\]]*?,[^\[\]]*?,[^\[\]]*?,[^\[\]]*?,[^\[\]]*?,[^\[\]]*?,[^\[\]]*?\]", campaign_string)
+    return len(matches)
 
 # -----------------------------------------------------------------------------
 # Main App
