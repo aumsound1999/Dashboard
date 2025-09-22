@@ -533,40 +533,47 @@ def main():
                             st.markdown("---")
         
         # --- MODIFIED: Campaign Details Display Section ---
-        # เปลี่ยนจากการแสดงข้อมูลดิบที่อ่านยาก มาเป็นการแยกข้อมูลแคมเปญเพื่อแสดงผลในตารางที่ชัดเจน
-        st.markdown("### Campaign Details")
-        if wide.shape[1] >= 2 and not wide.empty:
+        # ปรับปรุงการแสดงผลข้อมูลแคมเปญ ให้ผู้ใช้สามารถเลือกมุมมองได้
+        st.markdown("### Campaign Data")
+        
+        view_mode = st.radio(
+            "เลือกมุมมอง:",
+            ("แสดงรายละเอียด (Formatted)", "แสดงข้อมูลดิบ (Raw)"),
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+
+        if wide.shape[1] < 2 or wide.empty:
+            st.warning("ข้อมูลต้นทางมีน้อยกว่า 2 คอลัมน์ หรือไม่มีข้อมูล")
+        else:
             # เราจะใช้ 2 คอลัมน์แรกซึ่งปกติคือ 'channel' และข้อมูลรายละเอียดแคมเปญ
             raw_campaign_df = wide.iloc[:, :2].copy()
-            raw_campaign_df.columns = ['channel', 'details_string']
+            # พยายามตั้งชื่อคอลัมน์ให้สื่อความหมายมากขึ้น
+            raw_campaign_df.columns = ['channel', 'campaign_data_string']
 
-            all_campaigns = []
-            for _, row in raw_campaign_df.iterrows():
-                channel_name = row['channel']
-                details_string = row['details_string']
-                
-                # ใช้ฟังก์ชัน parse_campaign_details ที่มีอยู่แล้วเพื่อดึงข้อมูลที่มีโครงสร้าง
-                parsed_campaigns = parse_campaign_details(details_string)
-                
-                for campaign in parsed_campaigns:
-                    # เพิ่มชื่อ channel เข้าไปในข้อมูลของแต่ละแคมเปญ
-                    campaign['channel'] = channel_name
-                    all_campaigns.append(campaign)
+            if view_mode == "แสดงข้อมูลดิบ (Raw)":
+                st.dataframe(raw_campaign_df, use_container_width=True)
             
-            if not all_campaigns:
-                st.info("No detailed campaign data found in the raw source.")
-            else:
-                # สร้าง DataFrame ที่สะอาดจากข้อมูลที่แยกออกมาแล้ว
-                display_df = pd.DataFrame(all_campaigns)
+            elif view_mode == "แสดงรายละเอียด (Formatted)":
+                all_campaigns = []
+                for _, row in raw_campaign_df.iterrows():
+                    channel_name = row['channel']
+                    details_string = row['campaign_data_string']
+                    
+                    parsed_campaigns = parse_campaign_details(details_string)
+                    
+                    for campaign in parsed_campaigns:
+                        campaign['channel'] = channel_name
+                        all_campaigns.append(campaign)
                 
-                # จัดลำดับคอลัมน์ใหม่เพื่อให้อ่านง่ายขึ้น
-                cols_order = ['channel', 'id', 'budget', 'sales', 'orders', 'roas']
-                # กรองเอาเฉพาะคอลัมน์ที่มีอยู่จริงใน DataFrame
-                display_df = display_df[[col for col in cols_order if col in display_df.columns]]
-                
-                st.dataframe(display_df, use_container_width=True)
-        else:
-            st.warning("The source data has fewer than 2 columns or is empty.")
+                if not all_campaigns:
+                    st.info("ไม่สามารถแยกข้อมูลแคมเปญอย่างละเอียดได้ จะแสดงข้อมูลดิบแทน")
+                    st.dataframe(raw_campaign_df, use_container_width=True) # Fallback to raw data
+                else:
+                    display_df = pd.DataFrame(all_campaigns)
+                    cols_order = ['channel', 'id', 'budget', 'sales', 'orders', 'roas']
+                    display_df = display_df[[col for col in cols_order if col in display_df.columns]]
+                    st.dataframe(display_df, use_container_width=True)
 
 
     elif page == "Channel":
