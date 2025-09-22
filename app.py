@@ -512,11 +512,48 @@ def main():
             else:
                 st.info("No data for heatmap.")
         
-        # --- NEW SECTION: Campaign Performance Summary ---
-        st.markdown("### Campaign Performance Summary")
+        # --- FIX: Restore the "Advertising Credits Are Low" section ---
+        st.markdown("### Advertising Credits Are Low")
         
+        credit_threshold = st.selectbox(
+            "Show channels with credits below:",
+            options=[500, 1000, 1500, 2000, 3000],
+            index=0
+        )
+
         latest_snapshot_all = df_long.sort_values('timestamp').groupby('channel').tail(1).reset_index()
 
+        low_credit_channels = latest_snapshot_all[
+            (latest_snapshot_all['misc'].notna()) &
+            (latest_snapshot_all['misc'] < credit_threshold) &
+            (latest_snapshot_all['ads'].notna()) &
+            (latest_snapshot_all['ads'] > 0)
+        ].copy()
+
+        if low_credit_channels.empty:
+            st.info(f"No active channels found with credits below {credit_threshold:,.0f}.")
+        else:
+            num_channels = len(low_credit_channels)
+            num_cols = 6
+            
+            low_credit_channels = low_credit_channels.sort_values('misc')
+
+            for i in range(0, num_channels, num_cols):
+                cols = st.columns(num_cols)
+                row_data = low_credit_channels.iloc[i : i + num_cols]
+                
+                for idx, col in enumerate(cols):
+                    if idx < len(row_data):
+                        channel_info = row_data.iloc[idx]
+                        with col:
+                            st.markdown(f"**{channel_info['channel']}**")
+                            st.markdown(f"เครดิตคงเหลือ: **{channel_info['misc']:,.0f}**")
+                            st.markdown(f"สถานะแอด: **เปิดใช้งาน**")
+                            st.markdown("---")
+
+        # --- Campaign Performance Summary Section ---
+        st.markdown("### Campaign Performance Summary")
+        
         if 'campaign' not in latest_snapshot_all.columns:
             st.warning("'Campaign' column not found. Cannot display campaign performance.")
         else:
