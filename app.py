@@ -501,7 +501,8 @@ def main():
             st.info(f"No active channels found with credits below {credit_threshold:,.0f}.")
         else:
             num_channels = len(low_credit_channels)
-            num_cols = 3  # Display 3 channels per row
+            # CHANGE: Display 6 channels per row
+            num_cols = 6
             
             low_credit_channels = low_credit_channels.sort_values('misc') # Sort by lowest credit
 
