@@ -1,5 +1,5 @@
 # app.py
-# Step 3: Final robust parsing logic.
+# Step 2: Extract and display active campaign names.
 
 import io
 import re
@@ -66,8 +66,8 @@ def get_campaign_names(campaign_string: str) -> str:
 # -----------------------------------------------------------------------------
 
 def main():
-    st.title("Step 3: Final Campaign Verification")
-    st.info("This version uses a highly robust method to identify and count campaigns based on their data structure. This should now be 100% accurate.")
+    st.title("Step 2: Campaign Name Extraction")
+    st.info("Now we are extracting the names of the active campaigns. If a channel has multiple campaigns, they will be displayed on separate lines.")
 
     try:
         # Load the raw data from Google Sheets
@@ -86,15 +86,17 @@ def main():
         summary_df = df_wide[[channel_col, campaign_col]].copy()
         summary_df.rename(columns={channel_col: 'Channel', campaign_col: 'Raw Campaign Data'}, inplace=True)
         
-        # Apply the new, robust functions
-        summary_df['Active Campaign Count'] = summary_df['Raw Campaign Data'].apply(count_active_campaigns)
+        # Apply the new extraction function
         summary_df['Active Campaign IDs'] = summary_df['Raw Campaign Data'].apply(get_campaign_names)
+        summary_df['Active Campaign Count'] = summary_df['Raw Campaign Data'].apply(count_active_campaigns)
+
 
         # --- Display the result ---
-        st.markdown("### Active Campaigns per Channel")
-        
+        st.markdown("### Active Campaign IDs per Channel")
+        # Filter out channels with no active campaigns for a cleaner view
+        active_channels_df = summary_df[summary_df['Active Campaign Count'] > 0].copy()
         st.dataframe(
-            summary_df[['Channel', 'Active Campaign Count', 'Active Campaign IDs', 'Raw Campaign Data']],
+            active_channels_df[['Channel', 'Active Campaign Count', 'Active Campaign IDs']],
             use_container_width=True
         )
 
