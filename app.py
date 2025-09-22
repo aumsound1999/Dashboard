@@ -137,11 +137,14 @@ def parse_metrics_cell(s: str):
 
 def count_active_campaigns(campaign_string: str) -> int:
     """
-    NEW: นับจำนวนแคมเปญที่เปิดใช้งานจาก campaign string
+    CRITICAL FIX: แก้ไข logic การนับให้แม่นยำขึ้น
+    โดยจะนับเฉพาะ pattern ของแอดที่เปิดอยู่ และไม่สนใจข้อความ 'ไม่มีแอด'
     """
-    if not isinstance(campaign_string, str) or "ไม่มีแอด" in campaign_string:
+    if not isinstance(campaign_string, str):
         return 0
-    # ค้นหา pattern 'gmvus' ตามด้วยเลขที่ไม่ใช่ 0 ซึ่งหมายถึงแคมเปญที่เปิดอยู่
+    # The string "ไม่มีแอดที่เปิด" can coexist with active campaign data.
+    # The reliable way is to count patterns that indicate an active ad.
+    # Pattern: 'gmvus' followed by a non-zero digit [1-9].
     active_patterns = re.findall(r"gmvus[1-9]", campaign_string)
     return len(active_patterns)
 
@@ -531,18 +534,6 @@ def main():
                                 st.markdown(f"แอดที่เปิด: **{channel_info['active_ads']}** แคมเปญ")
                                 st.markdown("---")
         
-        # --- NEW DIAGNOSTIC SECTION ---
-        with st.expander("🕵️‍♀️ Diagnostic Data: Click to see the data used for the credit alert"):
-            st.markdown("This table shows the single latest data point for each channel that the app is using to check for low credits.")
-            if 'campaign' not in latest_snapshot_all.columns:
-                 st.warning("'Campaign' column not found.")
-            else:
-                if 'active_ads' not in latest_snapshot_all.columns:
-                     latest_snapshot_all['active_ads'] = latest_snapshot_all['campaign'].apply(count_active_campaigns)
-                
-                st.dataframe(latest_snapshot_all[['channel', 'timestamp', 'campaign', 'misc', 'active_ads']].sort_values('channel'))
-
-
     elif page == "Channel":
         # ... (This page can be updated similarly if needed) ...
         if not all_channels:
