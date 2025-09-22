@@ -125,6 +125,16 @@ def parse_metrics_cell(s: str):
         nums.append(np.nan)
     return nums
 
+def count_active_campaigns(campaign_string: str) -> int:
+    """
+    NEW: นับจำนวนแคมเปญที่เปิดใช้งานจาก campaign string
+    """
+    if not isinstance(campaign_string, str) or "ไม่มีแอด" in campaign_string:
+        return 0
+    # ค้นหา pattern 'gmvus' ตามด้วยเลขที่ไม่ใช่ 0 ซึ่งหมายถึงแคมเปญที่เปิดอยู่
+    active_patterns = re.findall(r"gmvus[1-9]", campaign_string)
+    return len(active_patterns)
+
 # -----------------------------------------------------------------------------
 # Loaders
 # -----------------------------------------------------------------------------
@@ -467,16 +477,49 @@ def main():
             else:
                 st.info("No data for heatmap.")
 
-        st.markdown("### Data (Hourly Latest Snapshot)")
-        hourly_df = hourly_latest(d_filtered, tz=tz)
-        show_cols = ["hour_key", "channel"]
-        if 'campaign' in hourly_df.columns:
-            show_cols.append('campaign')
-        show_cols.extend(["ads", "orders", "sales", "SaleRO", "ads_ro_raw"])
+        # ---- NEW SECTION: Low Credit Alerts ----
+        st.markdown("### Advertising Credits Are Low")
         
-        show_df = hourly_df[show_cols]
-        show_df = show_df.rename(columns={"hour_key": "hour", "ads": "budget(ads)", "ads_ro_raw": "ads_ro"})
-        st.dataframe(show_df.sort_values(["hour", "channel"]).round(3), use_container_width=True, height=360)
+        credit_threshold = st.selectbox(
+            "Show channels with credits below:",
+            options=[500, 1000, 1500, 2000, 3000],
+            index=0
+        )
+
+        # Get the latest snapshot for ALL channels from the original unfiltered dataframe
+        latest_snapshot_all = df_long.sort_values('timestamp').groupby('channel').tail(1).reset_index()
+
+        if 'campaign' not in latest_snapshot_all.columns:
+            st.warning("'Campaign' column not found. Cannot display credit alerts.")
+        else:
+            latest_snapshot_all['active_ads'] = latest_snapshot_all['campaign'].apply(count_active_campaigns)
+            
+            low_credit_channels = latest_snapshot_all[
+                (latest_snapshot_all['misc'] < credit_threshold) &
+                (latest_snapshot_all['active_ads'] > 0)
+            ].copy()
+
+            if low_credit_channels.empty:
+                st.info(f"No active channels found with credits below {credit_threshold:,.0f}.")
+            else:
+                num_channels = len(low_credit_channels)
+                num_cols = 3  # Display 3 channels per row
+                
+                low_credit_channels = low_credit_channels.sort_values('misc') # Sort by lowest credit
+
+                for i in range(0, num_channels, num_cols):
+                    cols = st.columns(num_cols)
+                    row_data = low_credit_channels.iloc[i : i + num_cols]
+                    
+                    for idx, col in enumerate(cols):
+                        if idx < len(row_data):
+                            channel_info = row_data.iloc[idx]
+                            with col:
+                                st.markdown(f"**{channel_info['channel']}**")
+                                st.markdown(f"เครดิตคงเหลือ: **{channel_info['misc']:,.0f}**")
+                                st.markdown(f"แอดที่เปิด: **{channel_info['active_ads']}** แคมเปญ")
+                                st.markdown("---")
+
 
     elif page == "Channel":
         # ... (This page can be updated similarly if needed) ...
