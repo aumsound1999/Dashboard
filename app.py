@@ -34,37 +34,69 @@ def is_time_col(col: str) -> bool:
 def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") -> dict:
     """
     IMPROVEMENT: แก้ปัญหาการ parse timestamp ข้ามเดือน/ปี
-    ฟังก์ชันนี้จะฉลาดขึ้นโดยการตรวจสอบลำดับของวันเพื่ออนุมานการเปลี่ยนเดือนและปี
-    "D31 23:00", "D1 00:00" -> จะเข้าใจว่า D1 คือวันแรกของเดือนถัดไป
+    ฟังก์ชันนี้จะทำงานโดยการยึดคอลัมน์เวลาล่าสุดเป็นหลัก แล้วไล่เวลาย้อนกลับไปข้างหลัง
+    เพื่อแก้ปัญหาการคำนวณเดือน/ปีผิดพลาดเมื่อข้อมูลคร่อมเดือน
     """
     timestamps = {}
     now = pd.Timestamp.now(tz=tz)
-    current_year, current_month = now.year, now.month
-    last_day = 0
+    
+    time_cols_only = [h for h in headers if is_time_col(h)]
+    if not time_cols_only:
+        return {h: pd.NaT for h in headers}
 
-    sorted_headers = sorted(headers, key=lambda h: (int(re.search(r'\d+', h).group()), pd.to_datetime(re.search(r'\d{1,2}:\d{1,2}', h).group()).time()) if re.search(r'\d+', h) and re.search(r'\d{1,2}:\d{1,2}', h) else (0, pd.Timestamp.min.time()))
+    temp_timestamps = {}
+    last_ts = pd.NaT
 
-    for hdr in sorted_headers:
+    # Iterate backwards through the time columns, assuming original order is chronological
+    for hdr in reversed(time_cols_only):
         hdr_strip = hdr.strip()
         m = re.match(r"^[A-Z](\d{1,2})\s+(\d{1,2}):(\d{1,2})$", hdr_strip)
         if not m:
-            timestamps[hdr] = pd.NaT
             continue
-
-        d, hh, mm = map(int, m.groups())
-
-        if d < last_day:
-            next_month_ts = pd.Timestamp(year=current_year, month=current_month, day=1) + pd.DateOffset(months=1)
-            current_month = next_month_ts.month
-            current_year = next_month_ts.year
         
-        try:
-            ts = pd.Timestamp(year=current_year, month=current_month, day=d, hour=hh, minute=mm, tz=tz)
-            timestamps[hdr] = ts
-        except ValueError:
-            timestamps[hdr] = pd.NaT
+        d, hh, mm = map(int, m.groups())
+        
+        if pd.isna(last_ts):
+            # This is the last chronological column. Anchor it based on the current time.
+            try:
+                ts = pd.Timestamp(year=now.year, month=now.month, day=d, hour=hh, minute=mm, tz=tz)
+                # If the generated timestamp is in the future, it must be from the previous month.
+                if ts > now:
+                    ts -= pd.DateOffset(months=1)
+                temp_timestamps[hdr] = ts
+                last_ts = ts
+            except ValueError:
+                # Handle invalid dates like 'Feb 30'. Assume it's from the previous month.
+                try:
+                    prev_month_date = now - pd.DateOffset(months=1)
+                    ts = pd.Timestamp(year=prev_month_date.year, month=prev_month_date.month, day=d, hour=hh, minute=mm, tz=tz)
+                    temp_timestamps[hdr] = ts
+                    last_ts = ts
+                except ValueError:
+                    temp_timestamps[hdr] = pd.NaT
+        else:
+            # For all preceding columns, create a timestamp relative to the previously processed one.
+            try:
+                ts = pd.Timestamp(year=last_ts.year, month=last_ts.month, day=d, hour=hh, minute=mm, tz=tz)
+                # If this new timestamp is later than the one that came after it,
+                # it means we have crossed a month/year boundary going backwards.
+                if ts > last_ts:
+                    ts -= pd.DateOffset(months=1)
+                temp_timestamps[hdr] = ts
+                last_ts = ts # The new "last" timestamp is the one we just processed
+            except ValueError:
+                # Handle invalid dates by trying the month before the last valid one.
+                try:
+                    prev_month_date = last_ts - pd.DateOffset(months=1)
+                    ts = pd.Timestamp(year=prev_month_date.year, month=prev_month_date.month, day=d, hour=hh, minute=mm, tz=tz)
+                    temp_timestamps[hdr] = ts
+                    last_ts = ts
+                except ValueError:
+                    temp_timestamps[hdr] = pd.NaT
 
-        last_day = d
+    # Map the parsed timestamps back to the full list of headers
+    for hdr in headers:
+        timestamps[hdr] = temp_timestamps.get(hdr, pd.NaT)
         
     return timestamps
 
