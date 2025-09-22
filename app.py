@@ -1,231 +1,206 @@
-# app.py
-# -*- coding: utf-8 -*-
-import ast
-import re
-from typing import List, Tuple, Optional
+# ================== LOW-CREDIT PANEL (Drop-in, Single-file) ==================
+# วางโค้ดบล็อกนี้ไว้ด้านบนไฟล์ app.py / หน้า Overview เดิมได้เลย
 
-import numpy as np
+from __future__ import annotations
+import re
+from typing import Optional, Tuple, List
+
 import pandas as pd
 import streamlit as st
 
 
-# =========================
-# Data loading (เชื่อมกับของเดิม)
-# =========================
-@st.cache_data(show_spinner=False)
-def load_data() -> pd.DataFrame:
-    """
-    โหลดตารางสแนปช็อต per channel 'ชั่วโมงล่าสุด'
-    ต้องคืน DataFrame ที่อย่างน้อยมีคอลัมน์:
-        - 'channel' หรือ 'C_name' (ชื่อช่อง)
-        - 1 คอลัมน์ฝั่ง 'ข้อมูลแอดรายแคมป์' (มีสตริงที่มี 'gmv:' / 'auto:' และลิสต์แคมเปญ)
-        - 1 คอลัมน์ฝั่ง 'สแนปช็อตรวม' (สตริงตัวเลขคั่น , สิ้นสุดด้วยค่าเครดิต)
-    หมายเหตุ: ด้านล่างมี auto-detect ชื่อคอลัมน์ให้ ถ้าชื่อไม่ตรงก็ยังเดินต่อได้
-    """
-    # TODO: เชื่อมกับแหล่งข้อมูลจริงของคุณ (Google Sheet/DB/CSV)
-    # ที่นี่ใส่ dummy โครงสร้างไว้ให้เห็นหน้าตาเท่านั้น
-    data = [
-        {
-            "channel": "aaa",
-            "ads_blob": "('gmv:u0s2.0', 'auto:u0s1.0', [['ro_30', 1250, 34, 4, 95, 720, 20.89], ['ro_99', 900, 0, 0, 0, 0, 0.0]])",
-            "snapshot": "2025,12,34,776,22,51,400"
-        },
-        {
-            "channel": "bbb",
-            "ads_blob": "('gmv:u0s2.0', 'auto:u0s2.0', [['camp_a', 800, 0, 0, 0, 0, 0.0], ['camp_b', 700, 0, 0, 0, 0, 0.0]])",
-            "snapshot": "2025,11,22,500,10,25,455"
-        },
-        {
-            "channel": "ccc",
-            "ads_blob": "('gmv:u0s2.0', 'auto:u0s1.0', [['c1', 1000, 25, 2, 33, 195, 25.34]])",
-            "snapshot": "2025,10,22,333,11,22,444"
-        },
-        {
-            "channel": "ddd",
-            "ads_blob": "('gmv:u0s2.0', 'auto:u0s1.0', [['c1', 1000, 0, 0, 0, 0, 0.0]])",
-            "snapshot": "2025,10,22,333,11,22,444"
-        },
-    ]
-    return pd.DataFrame(data)
+# -------------------- CONFIG --------------------
+LOW_CREDIT_THRESHOLD = 500  # เครดิตคงเหลือต่ำกว่าเท่านี้ ให้แจ้งเตือน
+SECTION_TITLE = "Advertising credits are low"
+LEFT_LABEL  = "ช่อง"
+MID1_LABEL  = "เครดิตเหลือ"
+MID2_LABEL  = "แคมป์ที่เปิด"
+RIGHT_LABEL = "ช่อง"
+# ------------------------------------------------
 
 
-# =========================
-# Helpers: auto-detect columns
-# =========================
-def find_channel_col(df: pd.DataFrame) -> str:
-    cand = [c for c in df.columns if c.lower() in ("channel", "c_name", "cname")]
-    if cand:
-        return cand[0]
-    # ถ้าไม่มี ให้เดาว่าคอลัมน์แรกคือชื่อช่อง
+def _find_channel_col(df: pd.DataFrame) -> str:
+    """พยายามหา column ชื่อช่อง: 'channel' หรือ 'c_name' หรือคอลัมน์แรก"""
+    candidates = [c for c in df.columns if str(c).strip().lower() in ("channel", "c_name")]
+    if candidates:
+        return candidates[0]
     return df.columns[0]
 
 
-def find_ads_blob_col(df: pd.DataFrame) -> Optional[str]:
-    """
-    หา column ที่เก็บสตริงเหมือน ('gmv:u0s2.0', 'auto:u0s1.0', [[...]])
-    """
-    for col in df.columns:
-        if df[col].dtype == object:
-            s = str(df[col].dropna().astype(str).head(3).tolist())
-            if "gmv:" in s and "auto:" in s and "[[" in s:
-                return col
+def _looks_like_ads_blob(series: pd.Series) -> bool:
+    """เดาว่าคอลัมน์นี้เป็นก้อนข้อมูลแอด (มี 'gmv:' และ 'auto:')"""
+    cnt = 0
+    for v in series.astype(str).head(50):
+        s = v.replace(" ", "")
+        if "gmv:" in s and "auto:" in s:
+            cnt += 1
+    return cnt >= max(1, len(series) // 50)  # มีบ้างถือว่าใช่
+
+
+def _find_ads_blob_col(df: pd.DataFrame) -> Optional[str]:
+    for c in df.columns:
+        s = df[c]
+        if s.dtype == "object" and _looks_like_ads_blob(s):
+            return c
     return None
 
 
-def find_snapshot_col(df: pd.DataFrame) -> Optional[str]:
+def _looks_like_snapshot(series: pd.Series) -> bool:
     """
-    หา column snapshot ที่เป็นตัวเลขคั่นด้วย , และเราอยากใช้ตัวท้ายสุดเป็น credit
+    เดาว่าเป็นคอลัมน์ snapshot:
+    - เป็นสตริงของตัวเลขคั่นด้วย comma เช่น '2025,12,34,776,22,51,1036'
+    - ค่าสุดท้ายคือเครดิตคงเหลือ (ตัวเลข)
     """
-    pattern = re.compile(r"^\s*\d+(,\s*\d+){3,}\s*$")
-    for col in df.columns:
-        if df[col].dtype == object:
-            vals = df[col].dropna().astype(str).head(5)
-            ok_count = sum(bool(pattern.match(v)) for v in vals)
-            if ok_count >= max(1, len(vals) // 2):
-                return col
-    return None
+    ok, tried = 0, 0
+    for v in series.astype(str).head(50):
+        tried += 1
+        parts = [p for p in v.split(",") if p.strip() != ""]
+        if len(parts) >= 2 and re.fullmatch(r"[0-9]+", parts[-1]) is not None:
+            ok += 1
+    return ok >= max(1, tried // 3)
 
 
-# =========================
-# Parse functions
-# =========================
-def parse_campaign_blob(v: str) -> List[List[float]]:
-    """
-    พาร์สก้อนแคมเปญฝั่งแอด
-    Expected literal_eval -> (gmv_flag, auto_flag, [[name, budget, spend, orders, views, gmv, roas], ...])
-    คืนลิสต์ของแคมเปญ (list)
-    """
-    try:
-        tup = ast.literal_eval(v)
-        if isinstance(tup, tuple) and len(tup) >= 3 and isinstance(tup[2], list):
-            return tup[2]
-        # บางเคสข้อมูลเป็น list เดี่ยว
-        if isinstance(tup, list) and len(tup) and isinstance(tup[0], list):
-            return tup
-    except Exception:
-        pass
-    return []
-
-
-def count_active_campaigns(v: str) -> int:
-    """
-    นับแคมเปญที่ 'เปิด' แบบ conservative = spend > 0
-    """
-    camps = parse_campaign_blob(v)
-    active = 0
-    for item in camps:
-        # รูปแบบคาดหวัง: [name, budget, spend, orders, views, gmv, roas]
-        if len(item) >= 3:
-            try:
-                spend = float(item[2])
-                if spend > 0:
-                    active += 1
-            except Exception:
-                continue
-    return active
-
-
-def extract_credit_from_snapshot(s: str) -> Optional[float]:
-    """
-    ดึงเครดิตคงเหลือจาก snapshot (เอาตัวท้ายสุด)
-    ตัวอย่าง: '2025,12,34,776,22,51,1036' -> 1036
-    """
-    if not isinstance(s, str):
+def _find_snapshot_col(df: pd.DataFrame) -> Optional[str]:
+    candidates = []
+    for c in df.columns:
+        if df[c].dtype == "object" and _looks_like_snapshot(df[c]):
+            candidates.append(c)
+    if not candidates:
         return None
+    # ถ้ามีหลายคอลัมน์ เลือกคอลัมน์ที่ *ขวาสุด* (ล่าสุด)
+    rightmost = None
+    right_idx = -1
+    for c in candidates:
+        idx = list(df.columns).index(c)
+        if idx > right_idx:
+            right_idx, rightmost = idx, c
+    return rightmost
+
+
+def _safe_int(x) -> Optional[int]:
+    """แปลงเป็น int อย่างปลอดภัย"""
     try:
-        parts = [x.strip() for x in s.split(",")]
-        if not parts:
-            return None
-        return float(parts[-1])
+        return int(str(x).strip())
     except Exception:
         return None
 
 
-# =========================
-# UI Blocks
-# =========================
-def render_low_credit_panel(df_latest: pd.DataFrame):
+def _extract_credit_from_snapshot(val: str) -> Optional[int]:
     """
-    วาดบล็อก Advertising credits are low
-    - คัดช่องที่เครดิต < 500 และมีแคมเปญเปิดอยู่ > 0
+    value snapshot -> เครดิตคงเหลือ (ตัวสุดท้าย)
+    '2025,12,34,776,22,51,1036' -> 1036
     """
-    channel_col = find_channel_col(df_latest)
-    ads_col = find_ads_blob_col(df_latest)
-    snap_col = find_snapshot_col(df_latest)
+    if pd.isna(val):
+        return None
+    parts = [p for p in str(val).split(",") if p.strip() != ""]
+    if not parts:
+        return None
+    return _safe_int(parts[-1])
+
+
+def _extract_active_campaigns_from_ads_blob(val: str) -> int:
+    """
+    ก้อนข้อมูลแอด -> นับจำนวนแคมป์ที่ 'เปิดใช้งาน'
+    กติกา: ในส่วนรายการแคมป์ (ลิสต์ด้านท้าย) เราถือว่า 'เปิด' เมื่อยอดใช้จ่าย (field ที่ 2) > 0
+    ตัวอย่าง: ['ro _30', 1250, 34, 4, 95, 720, 20.89] -> 34 คือ 'กินเงิน' > 0 ถือว่าเปิด
+    """
+    if pd.isna(val):
+        return 0
+    s = str(val)
+
+    # ตัดส่วนสรุปสิทธิ 'gmv:...' 'auto:...' ออก (ถ้ามี)
+    parts = s.split("]]")
+    tail = s
+    if len(parts) >= 2:
+        tail = parts[-1]
+
+    # ดึงกลุ่มที่อยู่ในวงเล็บเหลี่ยม เช่น [ 'ro', 1250, 34, ... ]
+    bracket_groups = re.findall(r"\[(.*?)\]", tail)
+    cnt = 0
+    for g in bracket_groups:
+        # split comma แต่ระวังเครื่องหมาย quote
+        toks = [t.strip(" '\"") for t in g.split(",")]
+        # ต้องมีอย่างน้อย 3 ช่อง: name, budget, spend
+        if len(toks) >= 3:
+            spend = _safe_int(toks[2])
+            if spend is not None and spend > 0:
+                cnt += 1
+    return cnt
+
+
+def _build_low_credit_table(df_latest: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """
+    ย่อย df_latest ให้เหลือเฉพาะช่องที่:
+    - เครดิตคงเหลือ < LOW_CREDIT_THRESHOLD
+    - มีแคมป์ที่เปิดใช้งาน > 0
+    ผลลัพธ์: DataFrame 4 คอลัมน์ (ซ้าย-กลาง-ขวา) สำหรับใช้โชว์ 2 คอลัมน์/แถว
+    """
+    if df_latest is None or df_latest.empty:
+        return None
+
+    chan_col = _find_channel_col(df_latest)
+    ads_col  = _find_ads_blob_col(df_latest)
+    snap_col = _find_snapshot_col(df_latest)
 
     if ads_col is None or snap_col is None:
-        st.info("ไม่พบคอลัมน์ข้อมูลฝั่งแอดหรือสแนปช็อตรวม จึงไม่สามารถคัดช่องเครดิตต่ำได้")
+        return None
+
+    work = df_latest[[chan_col, ads_col, snap_col]].copy()
+    work.rename(columns={chan_col: "channel", ads_col: "ads_blob", snap_col: "snapshot"}, inplace=True)
+
+    work["credit_left"] = work["snapshot"].apply(_extract_credit_from_snapshot)
+    work["active_camps"] = work["ads_blob"].apply(_extract_active_campaigns_from_ads_blob)
+
+    filt = (work["credit_left"].notna()) & (work["credit_left"] < LOW_CREDIT_THRESHOLD) & (work["active_camps"] > 0)
+    work = work.loc[filt, ["channel", "credit_left", "active_camps"]].copy()
+
+    if work.empty:
+        return None
+
+    work.sort_values(["credit_left", "channel"], inplace=True, ignore_index=True)
+
+    # แปลงเป็นรูป 2 คอลัมน์ (ซ้าย/ขวา) เพื่อโชว์สวย ๆ
+    rows = []
+    vals = work.to_dict("records")
+    for i in range(0, len(vals), 2):
+        left  = vals[i]
+        right = vals[i+1] if i+1 < len(vals) else None
+        rows.append({
+            LEFT_LABEL:  left["channel"],
+            MID1_LABEL:  left["credit_left"],
+            MID2_LABEL:  f'{left["active_camps"]} แคม',
+            RIGHT_LABEL: right["channel"] if right else ""
+        })
+    return pd.DataFrame(rows)
+
+
+def render_low_credit_panel(df_latest: pd.DataFrame) -> None:
+    """
+    วาง call ฟังก์ชันนี้ ณ ตำแหน่งที่เดิมคุณแสดง Data (hourly latest snapshot per channel)
+    """
+    st.markdown(f"### {SECTION_TITLE}")
+
+    tbl = _build_low_credit_table(df_latest)
+    if tbl is None or tbl.empty:
+        st.info("🙌 ไม่มีช่องที่เครดิตต่ำกว่ากำหนด หรือไม่พบคอลัมน์ข้อมูลที่ต้องใช้")
         return
 
-    out_rows: List[Tuple[str, float, int]] = []
-    for _, row in df_latest.iterrows():
-        ch = str(row[channel_col])
+    # แสดง 3 คอลัมน์ (ชื่อช่อง-เครดิต-แคมป์) และคอลัมน์ขวาเป็นชื่อช่อง ถัดไป (เหมือนตัวอย่างที่คุณส่งมา)
+    # เลือกแสดงแบบ Markdown เพื่อควบคุมฟอนต์/ระยะห่างให้อ่านง่าย
+    # (ถ้าอยากใช้ st.dataframe ก็เปลี่ยนได้)
+    cols = st.columns(4)
+    cols[0].markdown(f"**{LEFT_LABEL}**")
+    cols[1].markdown(f"**{MID1_LABEL}**")
+    cols[2].markdown(f"**{MID2_LABEL}**")
+    cols[3].markdown(f"**{RIGHT_LABEL}**")
 
-        credit = extract_credit_from_snapshot(row.get(snap_col, ""))
-        if credit is None:
-            continue
+    for _, r in tbl.iterrows():
+        cols = st.columns(4)
+        cols[0].write(str(r[LEFT_LABEL]))
+        cols[1].write(int(r[MID1_LABEL]))
+        cols[2].write(str(r[MID2_LABEL]))
+        cols[3].write(str(r[RIGHT_LABEL]))
 
-        n_active = count_active_campaigns(str(row.get(ads_col, "")))
+    st.caption("จะแสดงเฉพาะช่องที่เครดิต < %d และมีแคมป์ที่เปิดใช้งานอย่างน้อย 1 แคม" % LOW_CREDIT_THRESHOLD)
 
-        if (credit < 500) and (n_active > 0):
-            out_rows.append((ch, credit, n_active))
-
-    if not out_rows:
-        st.success("ทุกช่องมีเครดิตเพียงพอ หรือยังไม่มีแคมเปญที่เปิดอยู่ 😊")
-        return
-
-    show = pd.DataFrame(out_rows, columns=["ช่อง", "เครดิตคงเหลือ", "แคมเปญที่เปิด"])
-    show = show.sort_values(["เครดิตคงเหลือ", "แคมเปญที่เปิด"], ascending=[True, False]).reset_index(drop=True)
-
-    st.markdown("### Advertising credits are low")
-    st.caption("แสดงเฉพาะช่องที่เครดิตคงเหลือน้อยกว่า 500 และมีแคมเปญที่เปิดใช้งานอยู่ (spend > 0)")
-    st.dataframe(
-        show.style.format({"เครดิตคงเหลือ": lambda x: f"{int(x):,}", "แคมเปญที่เปิด": "{:d}"}),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-# =========================
-# App
-# =========================
-st.set_page_config(page_title="Shopee ROAS Dashboard", layout="wide")
-
-# Filters (เหมือนของเดิม – คุณเชื่อมจริงตามโปรเจกต์)
-with st.sidebar:
-    st.header("Filters")
-    st.button("Reload")
-
-# โหลดข้อมูล
-df_latest = load_data()
-
-# KPI ส่วนบน (ของเดิมคุณมีแล้ว—คงโครงสร้างไว้/ดึงจาก df_latest ตามจริง)
-kpi_cols = st.columns(5)
-with kpi_cols[0]:
-    st.metric("Sales", f"{int(np.random.randint(150000, 250000)):,}", "+34.0%")
-with kpi_cols[1]:
-    st.metric("Orders", f"{int(np.random.randint(800, 1300)):,}", "+28.0%")
-with kpi_cols[2]:
-    st.metric("Budget (Ads)", f"{int(np.random.randint(6000, 9000)):,}", "+9.0%")
-with kpi_cols[3]:
-    st.metric("sale_ro (Sales/Ads)", f"{np.random.uniform(20, 35):.3f}", "+21.0%")
-with kpi_cols[4]:
-    st.metric("ads_ro (avg>0)", f"{np.random.uniform(15, 25):.2f}", "-12.0%")
-
-st.markdown("## Trend overlay by day")
-st.caption("*ส่วนกราฟเดิมของคุณคงไว้ (ไม่เปลี่ยน)*")
-
-# -------------------------
-# แทนที่ “Data (hourly latest snapshot per channel)”
-# -------------------------
-st.markdown("---")
-render_low_credit_panel(df_latest)
-st.markdown("---")
-
-st.markdown("## Prime hours heatmap")
-st.caption("*ส่วน Heatmap เดิมของคุณคงไว้ (ไม่เปลี่ยน)*")
-
-# หมายเหตุ:
-# 1) หน้า Channel – Time series table (hourly) ไม่ถูกแตะ (คุณใช้โค้ดเดิมต่อไป)
-# 2) ถ้าในโปรเจกต์จริง ชื่อคอลัมน์ไม่ตรง โค้ดนี้ auto-detect ให้แล้ว
-# 3) ถ้าต้องใช้นิยาม 'แคมเปญเปิด' ที่ละเอียดขึ้น เปลี่ยน logic ในฟังก์ชัน count_active_campaigns() ได้เลย
+# ================== END LOW-CREDIT PANEL ==================
