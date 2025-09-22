@@ -12,6 +12,7 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 
+# CRITICAL FIX: st.set_page_config must be the first Streamlit command and only called once.
 st.set_page_config(page_title="Shopee ROAS", layout="wide")
 
 # Constants for easier maintenance
@@ -224,7 +225,7 @@ def kpis_from_snapshot(snap: pd.DataFrame):
 # -----------------------------------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="Shopee ROAS", layout="wide")
+    # CRITICAL FIX: Removed the duplicate st.set_page_config call from here.
     st.title("Shopee ROAS Dashboard")
 
     try:
