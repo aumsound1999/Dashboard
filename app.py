@@ -144,19 +144,22 @@ def load_wide_df():
     return pd.read_csv(io.StringIO(csv_text))
 
 def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
-    id_cols, time_cols = [], []
-    # Preserve original column order by iterating through df_wide.columns
-    for c in df_wide.columns:
-        c_str = str(c).strip()
-        if c_str.lower() == "name":
-            id_cols.append(c)
-        elif is_time_col(c_str):
-            time_cols.append(c)
-    
-    if not time_cols:
+    # IMPROVEMENT: Automatically detect all ID columns before the first time column
+    first_time_col_index = -1
+    for i, col in enumerate(df_wide.columns):
+        if is_time_col(str(col)):
+            first_time_col_index = i
+            break
+            
+    if first_time_col_index == -1:
         raise ValueError("No time columns detected. Expect headers like 'D21 12:45'.")
+        
+    id_cols = df_wide.columns[:first_time_col_index].tolist()
+    time_cols = [col for col in df_wide.columns[first_time_col_index:] if is_time_col(str(col))]
 
-    # Pass all columns to preserve order, function will filter internally
+    if not id_cols:
+         raise ValueError("No identifier columns (like 'name') found before time columns.")
+         
     ts_map = parse_timestamps_from_headers(df_wide.columns, tz=tz)
 
     m = df_wide.melt(id_vars=id_cols, value_vars=time_cols,
@@ -165,7 +168,14 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
 
     V = pd.DataFrame(m["raw"].apply(parse_metrics_cell).tolist(), columns=V_COLUMNS)
     
-    out = pd.concat([m[["timestamp"] + id_cols], V], axis=1).rename(columns={"name": "channel"})
+    # Build rename dictionary for known and potential ID columns
+    rename_dict = {}
+    if len(id_cols) > 0:
+        rename_dict[id_cols[0]] = 'channel' # Assume first is always channel
+    if len(id_cols) > 1:
+        rename_dict[id_cols[1]] = 'campaign' # Assume second is campaign
+
+    out = pd.concat([m[["timestamp"] + id_cols], V], axis=1).rename(columns=rename_dict)
     out = out.dropna(subset=["timestamp"]).reset_index(drop=True)
 
     for i, name in enumerate(METRIC_COLUMNS):
@@ -246,42 +256,44 @@ def hourly_latest(df: pd.DataFrame, tz="Asia/Bangkok"):
 
 def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     """
-    REFACTOR & FIX: ใช้ .transform() แทน .apply() เพื่อความเสถียร
+    FIX: แยก Logic การคำนวณ sale_ro และ ads_ro ให้ถูกต้อง
     """
     if df.empty:
         return pd.DataFrame(columns=df.columns.tolist() + ["hour_key", "day", "hstr", "_val"])
 
     H = hourly_latest(df, tz=tz).sort_values(["channel", "hour_key"])
     
-    # Define a reusable diff function
     diff_func = lambda s: s.diff().clip(lower=0)
 
     if metric in ("sales", "orders", "ads"):
-        # Use transform for robust, index-aligned operations
         diff_col = H.groupby("channel")[metric].transform(diff_func)
         H["_val"] = diff_col.fillna(0.0)
-    elif metric in ("sale_ro", "ads_ro"):
+    elif metric == "sale_ro":
         ds = H.groupby("channel")["sales"].transform(diff_func).fillna(0.0)
         da = H.groupby("channel")["ads"].transform(diff_func).fillna(0.0).replace(0, np.nan)
         ro = ds / da
-        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50)
+        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50) # Cap at 50 to prevent extreme values
         H["_val"] = ro.fillna(0.0)
+    elif metric == "ads_ro":
+        # ads_ro uses the raw reported value, not a calculated diff. We will average this.
+        H["_val"] = H["ads_ro_raw"].clip(upper=50).fillna(0.0)
     else:
         H["_val"] = 0.0
     
-    # Ensure the result column is numeric to prevent pivot errors
     H["_val"] = pd.to_numeric(H["_val"], errors='coerce').fillna(0.0)
     return H
 
 def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     """
-    REFACTOR: ใช้ฟังก์ชัน calculate_hourly_values เพื่อความสะอาดของโค้ด
+    FIX: ใช้ aggfunc='mean' สำหรับ ROAS metrics เพื่อไม่ให้ค่าในกราฟสูงผิดปกติ
     """
     H_with_vals = calculate_hourly_values(df, metric, tz)
     if H_with_vals.empty:
         return pd.DataFrame()
     
-    pivot = H_with_vals.pivot_table(index="hstr", columns="day", values="_val", aggfunc="sum").sort_index()
+    agg_function = "mean" if metric in ("sale_ro", "ads_ro") else "sum"
+    
+    pivot = H_with_vals.pivot_table(index="hstr", columns="day", values="_val", aggfunc=agg_function).sort_index()
     return pivot
 
 # -----------------------------------------------------------------------------
@@ -384,7 +396,8 @@ def main():
         display_kpi_metrics(cur_kpis, prev_kpis, cur_hour)
 
         st.markdown("### Hourly Performance Overlay")
-        metric = st.selectbox("Metric to plot:", options=["sales", "orders", "ads", "sale_ro"], index=0)
+        # FIX: Add 'ads_ro' back to the options
+        metric = st.selectbox("Metric to plot:", options=["sales", "orders", "ads", "sale_ro", "ads_ro"], index=0)
 
         piv = build_overlay_by_day(d_filtered, metric, tz=tz)
         if piv.empty:
@@ -409,7 +422,14 @@ def main():
             st.info("No data for heatmap.")
 
         st.markdown("### Data (Hourly Latest Snapshot)")
-        show_df = hourly_latest(d_filtered, tz=tz)[["hour_key", "channel", "ads", "orders", "sales", "SaleRO", "ads_ro_raw"]]
+        # IMPROVEMENT: Add 'campaign' column to the table if it exists
+        hourly_df = hourly_latest(d_filtered, tz=tz)
+        show_cols = ["hour_key", "channel"]
+        if 'campaign' in hourly_df.columns:
+            show_cols.append('campaign')
+        show_cols.extend(["ads", "orders", "sales", "SaleRO", "ads_ro_raw"])
+        
+        show_df = hourly_df[show_cols]
         show_df = show_df.rename(columns={"hour_key": "hour", "ads": "budget(ads)", "ads_ro_raw": "ads_ro"})
         st.dataframe(show_df.sort_values(["hour", "channel"]).round(3), use_container_width=True, height=360)
 
@@ -431,7 +451,8 @@ def main():
         display_kpi_metrics(cur_kpis, prev_kpis, cur_hour)
 
         st.markdown(f"### Hourly Performance Overlay for {ch}")
-        metric = st.selectbox("Metric to plot:", options=["sales", "orders", "ads", "sale_ro"], index=0, key="channel_metric")
+        # FIX: Add 'ads_ro' back to the options
+        metric = st.selectbox("Metric to plot:", options=["sales", "orders", "ads", "sale_ro", "ads_ro"], index=0, key="channel_metric")
         piv = build_overlay_by_day(ch_df, metric, tz=tz)
         if piv.empty:
             st.info("No data to plot.")
@@ -471,7 +492,14 @@ def main():
 
         st.markdown("#### Hourly Performance vs Baseline")
         base = st.selectbox("Baseline channel", options=pick, index=0)
-        met_options = {"Sales (Hourly)": "sales", "Orders (Hourly)": "orders", "Ads (Hourly)": "ads", "SaleRO (Hourly)": "sale_ro"}
+        # FIX: Add 'ads_ro' back to the options
+        met_options = {
+            "Sales (Hourly)": "sales", 
+            "Orders (Hourly)": "orders", 
+            "Ads (Hourly)": "ads", 
+            "SaleRO (Hourly)": "sale_ro",
+            "AdsRO (Hourly)": "ads_ro"
+        }
         met_display = st.selectbox("Metric", options=list(met_options.keys()), index=0)
         met = met_options[met_display]
 
