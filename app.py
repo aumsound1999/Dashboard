@@ -275,8 +275,21 @@ def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
         ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50) # Cap at 50 to prevent extreme values
         H["_val"] = ro.fillna(0.0)
     elif metric == "ads_ro":
-        # ads_ro uses the raw reported value, not a calculated diff. We will average this.
-        H["_val"] = H["ads_ro_raw"].clip(upper=50).fillna(0.0)
+        # NEW LOGIC: Calculate true hourly incremental ROAS from ad spend.
+        # This is what the user requested for better hourly performance insights.
+        # Step 1: Calculate the implied "Sales from Ads" based on reported cumulative data.
+        H['sales_from_ads'] = H['ads'] * H['ads_ro_raw']
+        
+        # Step 2: Calculate the hourly increase in these implied sales.
+        ds_from_ads = H.groupby("channel")['sales_from_ads'].transform(diff_func).fillna(0.0)
+        
+        # Step 3: Calculate the hourly increase in ad spend.
+        da = H.groupby("channel")["ads"].transform(diff_func).fillna(0.0).replace(0, np.nan)
+        
+        # Step 4: Calculate the true hourly ROAS.
+        ro = ds_from_ads / da
+        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50) # Cap at 50
+        H["_val"] = ro.fillna(0.0)
     else:
         H["_val"] = 0.0
     
