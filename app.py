@@ -109,18 +109,28 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
 
 def parse_metrics_cell(s: str):
     """
-    รับค่าเป็น string ตัวเลขคั่นด้วย comma -> list ความยาว 6 (เติม NaN ถ้าไม่ครบ)
+    FIX: ทำให้การ parse ข้อมูลมีความแม่นยำมากขึ้น โดยจัดการกับค่าที่หายไป (,,) ได้ถูกต้อง
     """
-    if not isinstance(s, str) or not re.search(r"\d", s or ""):
+    if not isinstance(s, str):
         return [np.nan] * 6
+    
     s_clean = re.sub(r"[^0-9\.\-,]", "", s)
-    parts = [p for p in s_clean.split(",") if p != ""]
+    # ไม่ลบ empty string ออก เพื่อรักษาตำแหน่งของข้อมูล
+    parts = s_clean.split(",")
     nums = []
+    
+    # วนลูปตามจำนวนค่าที่คาดหวัง (6 ค่า)
     for p in parts[:6]:
+        # แปลงค่าว่างให้เป็น NaN
+        if p.strip() == "":
+            nums.append(np.nan)
+            continue
         try:
             nums.append(float(p))
         except (ValueError, TypeError):
             nums.append(np.nan)
+    
+    # เติม NaN หากข้อมูลที่มาสั้นกว่า 6 ค่า
     while len(nums) < 6:
         nums.append(np.nan)
     return nums
