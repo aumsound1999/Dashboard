@@ -31,32 +31,20 @@ def fetch_csv_text():
 
 def extract_campaign_names(campaign_string: str) -> str:
     """
-    NEW LOGIC for Step 2:
-    This function now extracts the names (IDs) of the active campaigns.
-    It uses the same reliable method of identifying a campaign (a list with len > 6)
-    and then extracts the first element, which is the campaign ID.
+    CRITICAL FIX: Using a more robust Regex method.
+    The previous method `ast.literal_eval` was too strict and failed.
+    This new method uses regex to find all occurrences of a valid campaign ID pattern.
+    A valid campaign ID is assumed to be a quoted string containing only letters, numbers, and underscores.
     """
     if not isinstance(campaign_string, str):
         return ""
-
-    try:
-        campaign_list = ast.literal_eval(campaign_string)
-        
-        if not isinstance(campaign_list, list):
-            return ""
-            
-        campaign_names = []
-        for item in campaign_list:
-            # A real campaign with performance data is a list with more than 6 elements.
-            if isinstance(item, list) and len(item) > 6:
-                # The first element is the campaign ID
-                if isinstance(item[0], str):
-                    campaign_names.append(item[0])
-        
-        # Join multiple campaign names with a newline character for better display
-        return "\n".join(campaign_names)
-    except (ValueError, SyntaxError):
-        return ""
+    
+    # Regex to find a string inside single quotes that contains only letters, numbers, and underscores.
+    # This specifically targets campaign IDs like 'gmv_123' or 'ro_30' and ignores 'gmv:u0s2.0'.
+    campaign_names = re.findall(r"\'([a-zA-Z0-9_]+)\'", campaign_string)
+    
+    # Join multiple campaign names with a newline character for better display
+    return "\n".join(campaign_names)
 
 # -----------------------------------------------------------------------------
 # Main App
