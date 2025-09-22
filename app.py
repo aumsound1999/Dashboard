@@ -1,5 +1,5 @@
 # app.py
-# Step 2: Extract and display active campaign names.
+# Step 2.1: Display ALL channels, including those with zero campaigns.
 
 import io
 import re
@@ -66,8 +66,8 @@ def get_campaign_names(campaign_string: str) -> str:
 # -----------------------------------------------------------------------------
 
 def main():
-    st.title("Step 2: Campaign Name Extraction")
-    st.info("Now we are extracting the names of the active campaigns. If a channel has multiple campaigns, they will be displayed on separate lines.")
+    st.title("Step 2.1: Campaign Extraction and Count (All Channels)")
+    st.info("This view now shows ALL channels from the source file, including those with zero active campaigns.")
 
     try:
         # Load the raw data from Google Sheets
@@ -92,11 +92,15 @@ def main():
 
 
         # --- Display the result ---
-        st.markdown("### Active Campaign IDs per Channel")
-        # Filter out channels with no active campaigns for a cleaner view
-        active_channels_df = summary_df[summary_df['Active Campaign Count'] > 0].copy()
+        st.markdown("### Active Campaigns per Channel")
+        
+        # FIX: Remove the filter to display all channels, as requested by the user.
+        # The line below was removed:
+        # active_channels_df = summary_df[summary_df['Active Campaign Count'] > 0].copy()
+        
         st.dataframe(
-            active_channels_df[['Channel', 'Active Campaign Count', 'Active Campaign IDs']],
+            # Display the full summary_df instead of the filtered one.
+            summary_df[['Channel', 'Active Campaign Count', 'Active Campaign IDs']],
             use_container_width=True
         )
 
