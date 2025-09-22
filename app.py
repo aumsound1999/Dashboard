@@ -497,17 +497,159 @@ def main():
                             st.markdown(f"เครดิตคงเหลือ: **{channel_info['misc']:,.0f}**")
                             st.markdown(f"สถานะแอด: **เปิดใช้งาน**")
                             st.markdown("---")
+        
+        # --- Campaign Performance Summary Section ---
+        st.markdown("### Campaign Performance Summary")
+        
+        if 'campaign' not in latest_snapshot_all.columns:
+            st.warning("'Campaign' column not found. Cannot display campaign performance.")
+        else:
+            campaign_rows = []
+            for _, row in latest_snapshot_all.iterrows():
+                channel_name = row['channel']
+                campaign_details_list = parse_campaign_details(row['campaign'])
+                for campaign_data in campaign_details_list:
+                    campaign_rows.append({
+                        "Channel": channel_name,
+                        "Campaign ID": campaign_data['id'],
+                        "Budget": campaign_data['budget'],
+                        "Ads Spent": campaign_data['Ads Spent'],
+                        "Sales": campaign_data['sales'],
+                        "Orders": campaign_data['orders'],
+                        "View": campaign_data.get('View', np.nan), # Use .get for safety
+                        "ROAS": campaign_data['roas'],
+                    })
+            
+            if not campaign_rows:
+                st.info("No active campaign data found in the latest snapshot.")
+            else:
+                campaign_df = pd.DataFrame(campaign_rows)
+                # Ensure all desired columns exist, adding missing ones with NaN
+                final_cols = ['Channel', 'Campaign ID', 'Budget', 'Ads Spent', 'Orders', 'View', 'Sales', 'ROAS']
+                for col in final_cols:
+                    if col not in campaign_df.columns:
+                        campaign_df[col] = np.nan
+                
+                st.dataframe(campaign_df[final_cols].sort_values("ROAS", ascending=False), use_container_width=True)
 
-    # ... (Channel and Compare pages are omitted for brevity but are part of the full stable code)
     elif page == "Channel":
-        st.subheader("Channel Details")
-        # Placeholder for channel-specific logic
-        st.info("Channel page is under construction.")
+        # ... (This page can be updated similarly if needed) ...
+        if not all_channels:
+             st.warning("No channels found in the data.")
+             st.stop()
+        ch = st.selectbox("Pick one channel", options=all_channels, index=0)
+        ch_df = d_filtered[d_filtered["channel"] == ch].copy()
+        
+        st.subheader(f"Channel Details: {ch}")
+        if ch_df.empty:
+            st.warning("No data for this channel in the selected period.")
+            st.stop()
+
+        cur_snap, y_snap, cur_hour = current_and_yesterday_snapshots(ch_df, tz=tz)
+        cur_kpis = kpis_from_snapshot(cur_snap)
+        prev_kpis = kpis_from_snapshot(y_snap)
+        display_kpi_metrics(cur_kpis, prev_kpis, cur_hour)
+
+        st.markdown(f"### Hourly Performance Overlay for {ch}")
+        metric_options_ch = ["sales", "orders", "ads", "sale_ro", "ads_ro", "sale_day", "ads_ro & sale_ro"]
+        metric_ch = st.selectbox("Metric to plot:", options=metric_options_ch, index=0, key="channel_metric")
+
+        show_heatmap_ch = True
+        piv_for_heatmap_ch = None
+
+        if metric_ch == "ads_ro & sale_ro":
+            show_heatmap_ch = False # No heatmap for combined view on channel page either
+            piv_sale_ch = build_overlay_by_day(ch_df, "sale_ro", tz=tz)
+            piv_ads_ch = build_overlay_by_day(ch_df, "ads_ro", tz=tz)
+            
+            fig_ch = go.Figure()
+            if not piv_sale_ch.empty:
+                for day in piv_sale_ch.columns:
+                    fig_ch.add_trace(go.Scatter(x=piv_sale_ch.index, y=piv_sale_ch[day], mode="lines+markers", 
+                                             name=f"{str(day)} (Sale RO)", line=dict(dash='solid')))
+            if not piv_ads_ch.empty:
+                for day in piv_ads_ch.columns:
+                    fig_ch.add_trace(go.Scatter(x=piv_ads_ch.index, y=piv_ads_ch[day], mode="lines+markers", 
+                                             name=f"{str(day)} (Ads RO)", line=dict(dash='dash')))
+            
+            if not piv_sale_ch.empty or not piv_ads_ch.empty:
+                fig_ch.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title="ROAS")
+                st.plotly_chart(fig_ch, use_container_width=True)
+            else:
+                st.info("No data to plot for ROAS comparison.")
+
+        else:
+            piv_ch = build_overlay_by_day(ch_df, metric_ch, tz=tz)
+            if piv_ch.empty:
+                st.info("No data to plot.")
+            else:
+                fig_ch = go.Figure()
+                for day in piv_ch.columns:
+                    fig_ch.add_trace(go.Scatter(x=piv_ch.index, y=piv_ch[day], mode="lines+markers", name=str(day)))
+                title_ch = "Cumulative Sales" if metric_ch == "sale_day" else f"Hourly {metric_ch.replace('_', ' ').title()}"
+                fig_ch.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=title_ch)
+                st.plotly_chart(fig_ch, use_container_width=True)
 
     elif page == "Compare":
         st.subheader("Channel Comparison")
-        # Placeholder for comparison logic
-        st.info("Compare page is under construction.")
+        if len(all_channels) < 2:
+            st.info("You need at least 2 channels in your data to use the compare feature.")
+            st.stop()
+
+        pick = st.multiselect("Pick 2–4 channels", options=all_channels, default=all_channels[:min(4, len(all_channels))], max_selections=4)
+        if len(pick) < 2:
+            st.info("Please pick at least 2 channels to compare.")
+            st.stop()
+
+        sub = d_filtered[d_filtered["channel"].isin(pick)].copy()
+        if sub.empty:
+            st.warning("No data for the selected channels in this period.")
+            st.stop()
+
+        st.markdown("#### Cumulative KPI Comparison")
+        H = hourly_latest(sub, tz=tz)
+        latest_snap = H.sort_values("hour_key").groupby("channel").tail(1)
+        kpi_comparison = latest_snap.groupby("channel").agg(
+            Total_Sales=("sales", "sum"),
+            Total_Orders=("orders", "sum"),
+            Total_Ads=("ads", "sum"),
+            Avg_SaleRO=("SaleRO", "mean")
+        ).reset_index()
+        st.dataframe(kpi_comparison.round(2), use_container_width=True)
+
+        st.markdown("#### Hourly Performance vs Baseline")
+        base = st.selectbox("Baseline channel", options=pick, index=0)
+        met_options = {
+            "Sales (Hourly)": "sales", 
+            "Orders (Hourly)": "orders", 
+            "Ads (Hourly)": "ads", 
+            "SaleRO (Hourly)": "sale_ro",
+            "AdsRO (Hourly)": "ads_ro"
+        }
+        met_display = st.selectbox("Metric", options=list(met_options.keys()), index=0)
+        met = met_options[met_display]
+
+        H_with_vals = calculate_hourly_values(sub, met, tz=tz)
+        if H_with_vals.empty:
+            st.warning("No hourly data to compare for the selected metric.")
+            st.stop()
+            
+        piv_compare = H_with_vals.pivot_table(index="hour_key", columns="channel", values="_val", aggfunc="sum").fillna(0)
+
+        if base not in piv_compare.columns:
+            st.warning(f"Baseline channel '{base}' has no data for this metric. Please choose another.")
+            st.stop()
+            
+        base_series = piv_compare[base].replace(0, np.nan)
+        rel = (piv_compare.div(base_series, axis=0) - 1.0) * 100.0
+
+        fig = go.Figure()
+        for c in rel.columns:
+            if c == base: continue
+            fig.add_trace(go.Scatter(x=rel.index.strftime("%Y-%m-%d %H:%M"), y=rel[c], name=f"{c} vs {base}", mode="lines"))
+        
+        fig.update_layout(height=420, xaxis_title="Hour", yaxis_title=f"% Difference in {met_display} vs {base}")
+        st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
     main()
