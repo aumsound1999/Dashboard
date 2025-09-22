@@ -266,7 +266,7 @@ def hourly_latest(df: pd.DataFrame, tz="Asia/Bangkok"):
 
 def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     """
-    FIX: แยก Logic การคำนวณ sale_ro และ ads_ro ให้ถูกต้อง
+    IMPROVEMENT: เพิ่มการคำนวณ 'sale_day' (ยอดขายสะสม)
     """
     if df.empty:
         return pd.DataFrame(columns=df.columns.tolist() + ["hour_key", "day", "hstr", "_val"])
@@ -278,6 +278,9 @@ def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     if metric in ("sales", "orders", "ads"):
         diff_col = H.groupby("channel")[metric].transform(diff_func)
         H["_val"] = diff_col.fillna(0.0)
+    elif metric == "sale_day":
+        # 'sale_day' shows the cumulative sales value at that hour
+        H["_val"] = H["sales"].fillna(0.0)
     elif metric == "sale_ro":
         ds = H.groupby("channel")["sales"].transform(diff_func).fillna(0.0)
         da = H.groupby("channel")["ads"].transform(diff_func).fillna(0.0).replace(0, np.nan)
@@ -286,17 +289,9 @@ def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
         H["_val"] = ro.fillna(0.0)
     elif metric == "ads_ro":
         # NEW LOGIC: Calculate true hourly incremental ROAS from ad spend.
-        # This is what the user requested for better hourly performance insights.
-        # Step 1: Calculate the implied "Sales from Ads" based on reported cumulative data.
         H['sales_from_ads'] = H['ads'] * H['ads_ro_raw']
-        
-        # Step 2: Calculate the hourly increase in these implied sales.
         ds_from_ads = H.groupby("channel")['sales_from_ads'].transform(diff_func).fillna(0.0)
-        
-        # Step 3: Calculate the hourly increase in ad spend.
         da = H.groupby("channel")["ads"].transform(diff_func).fillna(0.0).replace(0, np.nan)
-        
-        # Step 4: Calculate the true hourly ROAS.
         ro = ds_from_ads / da
         ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50) # Cap at 50
         H["_val"] = ro.fillna(0.0)
@@ -419,33 +414,60 @@ def main():
         display_kpi_metrics(cur_kpis, prev_kpis, cur_hour)
 
         st.markdown("### Hourly Performance Overlay")
-        # FIX: Add 'ads_ro' back to the options
-        metric = st.selectbox("Metric to plot:", options=["sales", "orders", "ads", "sale_ro", "ads_ro"], index=0)
+        metric_options = ["sales", "orders", "ads", "sale_ro", "ads_ro", "sale_day", "ads_ro & sale_ro"]
+        metric = st.selectbox("Metric to plot:", options=metric_options, index=0)
 
-        piv = build_overlay_by_day(d_filtered, metric, tz=tz)
-        if piv.empty:
-            st.info("No data to plot for the selected metric.")
-        else:
+        show_heatmap = True
+        piv_for_heatmap = None
+
+        if metric == "ads_ro & sale_ro":
+            show_heatmap = False
+            piv_sale = build_overlay_by_day(d_filtered, "sale_ro", tz=tz)
+            piv_ads = build_overlay_by_day(d_filtered, "ads_ro", tz=tz)
+
             fig = go.Figure()
-            for day in piv.columns:
-                fig.add_trace(go.Scatter(x=piv.index, y=piv[day], mode="lines+markers", name=str(day)))
-            fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=f"Hourly {metric.replace('_', ' ').title()}")
-            st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("### Prime Hours Heatmap")
-        if not piv.empty:
-            fig_hm = px.imshow(
-                piv.T,
-                aspect="auto",
-                labels=dict(x="Hour", y="Day", color=f"Hourly {metric}"),
-                color_continuous_scale="Blues",
-            )
-            st.plotly_chart(fig_hm, use_container_width=True)
+            if not piv_sale.empty:
+                for day in piv_sale.columns:
+                    fig.add_trace(go.Scatter(x=piv_sale.index, y=piv_sale[day], mode="lines+markers", 
+                                             name=f"{str(day)} (Sale RO)", line=dict(dash='solid')))
+            if not piv_ads.empty:
+                for day in piv_ads.columns:
+                    fig.add_trace(go.Scatter(x=piv_ads.index, y=piv_ads[day], mode="lines+markers", 
+                                             name=f"{str(day)} (Ads RO)", line=dict(dash='dash')))
+            
+            if not piv_sale.empty or not piv_ads.empty:
+                fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title="ROAS")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No data to plot for ROAS comparison.")
+        
         else:
-            st.info("No data for heatmap.")
+            piv = build_overlay_by_day(d_filtered, metric, tz=tz)
+            piv_for_heatmap = piv
+            if piv.empty:
+                st.info("No data to plot for the selected metric.")
+            else:
+                fig = go.Figure()
+                for day in piv.columns:
+                    fig.add_trace(go.Scatter(x=piv.index, y=piv[day], mode="lines+markers", name=str(day)))
+                title = "Cumulative Sales" if metric == "sale_day" else f"Hourly {metric.replace('_', ' ').title()}"
+                fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=title)
+                st.plotly_chart(fig, use_container_width=True)
+
+        if show_heatmap:
+            st.markdown("### Prime Hours Heatmap")
+            if piv_for_heatmap is not None and not piv_for_heatmap.empty:
+                fig_hm = px.imshow(
+                    piv_for_heatmap.T,
+                    aspect="auto",
+                    labels=dict(x="Hour", y="Day", color=f"Hourly {metric}"),
+                    color_continuous_scale="Blues",
+                )
+                st.plotly_chart(fig_hm, use_container_width=True)
+            else:
+                st.info("No data for heatmap.")
 
         st.markdown("### Data (Hourly Latest Snapshot)")
-        # IMPROVEMENT: Add 'campaign' column to the table if it exists
         hourly_df = hourly_latest(d_filtered, tz=tz)
         show_cols = ["hour_key", "channel"]
         if 'campaign' in hourly_df.columns:
@@ -457,6 +479,7 @@ def main():
         st.dataframe(show_df.sort_values(["hour", "channel"]).round(3), use_container_width=True, height=360)
 
     elif page == "Channel":
+        # ... (This page can be updated similarly if needed) ...
         if not all_channels:
              st.warning("No channels found in the data.")
              st.stop()
@@ -474,17 +497,44 @@ def main():
         display_kpi_metrics(cur_kpis, prev_kpis, cur_hour)
 
         st.markdown(f"### Hourly Performance Overlay for {ch}")
-        # FIX: Add 'ads_ro' back to the options
-        metric = st.selectbox("Metric to plot:", options=["sales", "orders", "ads", "sale_ro", "ads_ro"], index=0, key="channel_metric")
-        piv = build_overlay_by_day(ch_df, metric, tz=tz)
-        if piv.empty:
-            st.info("No data to plot.")
+        metric_options_ch = ["sales", "orders", "ads", "sale_ro", "ads_ro", "sale_day", "ads_ro & sale_ro"]
+        metric_ch = st.selectbox("Metric to plot:", options=metric_options_ch, index=0, key="channel_metric")
+
+        show_heatmap_ch = True
+        piv_for_heatmap_ch = None
+
+        if metric_ch == "ads_ro & sale_ro":
+            show_heatmap_ch = False # No heatmap for combined view on channel page either
+            piv_sale_ch = build_overlay_by_day(ch_df, "sale_ro", tz=tz)
+            piv_ads_ch = build_overlay_by_day(ch_df, "ads_ro", tz=tz)
+            
+            fig_ch = go.Figure()
+            if not piv_sale_ch.empty:
+                for day in piv_sale_ch.columns:
+                    fig_ch.add_trace(go.Scatter(x=piv_sale_ch.index, y=piv_sale_ch[day], mode="lines+markers", 
+                                             name=f"{str(day)} (Sale RO)", line=dict(dash='solid')))
+            if not piv_ads_ch.empty:
+                for day in piv_ads_ch.columns:
+                    fig_ch.add_trace(go.Scatter(x=piv_ads_ch.index, y=piv_ads_ch[day], mode="lines+markers", 
+                                             name=f"{str(day)} (Ads RO)", line=dict(dash='dash')))
+            
+            if not piv_sale_ch.empty or not piv_ads_ch.empty:
+                fig_ch.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title="ROAS")
+                st.plotly_chart(fig_ch, use_container_width=True)
+            else:
+                st.info("No data to plot for ROAS comparison.")
+
         else:
-            fig = go.Figure()
-            for day in piv.columns:
-                fig.add_trace(go.Scatter(x=piv.index, y=piv[day], mode="lines+markers", name=str(day)))
-            fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=f"Hourly {metric.replace('_', ' ').title()}")
-            st.plotly_chart(fig, use_container_width=True)
+            piv_ch = build_overlay_by_day(ch_df, metric_ch, tz=tz)
+            if piv_ch.empty:
+                st.info("No data to plot.")
+            else:
+                fig_ch = go.Figure()
+                for day in piv_ch.columns:
+                    fig_ch.add_trace(go.Scatter(x=piv_ch.index, y=piv_ch[day], mode="lines+markers", name=str(day)))
+                title_ch = "Cumulative Sales" if metric_ch == "sale_day" else f"Hourly {metric_ch.replace('_', ' ').title()}"
+                fig_ch.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=title_ch)
+                st.plotly_chart(fig_ch, use_container_width=True)
 
     elif page == "Compare":
         st.subheader("Channel Comparison")
@@ -515,7 +565,6 @@ def main():
 
         st.markdown("#### Hourly Performance vs Baseline")
         base = st.selectbox("Baseline channel", options=pick, index=0)
-        # FIX: Add 'ads_ro' back to the options
         met_options = {
             "Sales (Hourly)": "sales", 
             "Orders (Hourly)": "orders", 
