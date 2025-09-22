@@ -1,5 +1,5 @@
 # app.py
-# Step 2.1: Display ALL channels, including those with zero campaigns.
+# Step 2.2: Explode campaigns into separate rows for clear display.
 
 import io
 import re
@@ -51,23 +51,13 @@ def extract_campaign_data(campaign_string: str) -> list:
     
     return matches
 
-def count_active_campaigns(campaign_string: str) -> int:
-    """Counts active campaigns by calling the extractor and getting the length."""
-    return len(extract_campaign_data(campaign_string))
-
-def get_campaign_names(campaign_string: str) -> str:
-    """Gets active campaign names and joins them with newlines."""
-    names = extract_campaign_data(campaign_string)
-    return "\n".join(names)
-
-
 # -----------------------------------------------------------------------------
 # Main App
 # -----------------------------------------------------------------------------
 
 def main():
-    st.title("Step 2.1: Campaign Extraction and Count (All Channels)")
-    st.info("This view now shows ALL channels from the source file, including those with zero active campaigns.")
+    st.title("Step 2.2: Exploded Campaign View")
+    st.info("This view now separates channels with multiple campaigns into distinct rows for clarity.")
 
     try:
         # Load the raw data from Google Sheets
@@ -86,21 +76,27 @@ def main():
         summary_df = df_wide[[channel_col, campaign_col]].copy()
         summary_df.rename(columns={channel_col: 'Channel', campaign_col: 'Raw Campaign Data'}, inplace=True)
         
-        # Apply the new extraction function
-        summary_df['Active Campaign IDs'] = summary_df['Raw Campaign Data'].apply(get_campaign_names)
-        summary_df['Active Campaign Count'] = summary_df['Raw Campaign Data'].apply(count_active_campaigns)
+        # Apply the extraction function to get a list of campaign IDs
+        summary_df['Campaign ID List'] = summary_df['Raw Campaign Data'].apply(extract_campaign_data)
+        
+        # --- Explode the DataFrame ---
+        # This is the key step. It creates a new row for each campaign ID in the list.
+        exploded_df = summary_df.explode('Campaign ID List').reset_index(drop=True)
 
+        # Count campaigns *after* exploding to get the correct total
+        exploded_df['Active Campaign Count'] = exploded_df.groupby('Channel')['Channel'].transform('count')
+
+        # Rename for final display
+        exploded_df.rename(columns={'Campaign ID List': 'Active Campaign ID'}, inplace=True)
+        
+        # Fill NaN for channels that had no campaigns (they become NaN after explode)
+        exploded_df['Active Campaign ID'].fillna('None', inplace=True)
 
         # --- Display the result ---
-        st.markdown("### Active Campaigns per Channel")
-        
-        # FIX: Remove the filter to display all channels, as requested by the user.
-        # The line below was removed:
-        # active_channels_df = summary_df[summary_df['Active Campaign Count'] > 0].copy()
+        st.markdown("### Active Campaigns per Channel (Exploded View)")
         
         st.dataframe(
-            # Display the full summary_df instead of the filtered one.
-            summary_df[['Channel', 'Active Campaign Count', 'Active Campaign IDs']],
+            exploded_df[['Channel', 'Active Campaign Count', 'Active Campaign ID']],
             use_container_width=True
         )
 
