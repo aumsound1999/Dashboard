@@ -8,6 +8,7 @@
 import os
 import io
 import re
+import ast
 from datetime import timedelta, date as date_type
 import numpy as np
 import pandas as pd
@@ -134,6 +135,39 @@ def parse_metrics_cell(s: str):
     while len(nums) < 6:
         nums.append(np.nan)
     return nums
+
+def parse_campaign_details(campaign_string: str):
+    """
+    NEW: แยกวิเคราะห์ข้อมูลแคมเปญจาก string ที่ซับซ้อน
+    """
+    if not isinstance(campaign_string, str) or "ไม่มีแอด" in campaign_string:
+        return []
+
+    try:
+        # Use ast.literal_eval to safely parse the string into a Python list
+        campaign_list = ast.literal_eval(campaign_string)
+        parsed_data = []
+        
+        for item in campaign_list:
+            if isinstance(item, list) and len(item) > 1:
+                # This is a campaign with detailed metrics
+                # Mapping based on user feedback: ID, Budget, ?, Orders, ?, Sales, ROAS
+                try:
+                    campaign_details = {
+                        "id": item[0],
+                        "budget": item[1],
+                        "orders": item[3],
+                        "sales": item[5],
+                        "roas": item[6],
+                    }
+                    parsed_data.append(campaign_details)
+                except (IndexError, TypeError):
+                    # Skip malformed inner lists
+                    continue
+        return parsed_data
+    except (ValueError, SyntaxError):
+        # Handle cases where the string is not a valid Python literal
+        return []
 
 # -----------------------------------------------------------------------------
 # Loaders
@@ -476,48 +510,35 @@ def main():
                 st.plotly_chart(fig_hm, use_container_width=True)
             else:
                 st.info("No data for heatmap.")
-
-        # ---- NEW SECTION: Low Credit Alerts ----
-        st.markdown("### Advertising Credits Are Low")
         
-        credit_threshold = st.selectbox(
-            "Show channels with credits below:",
-            options=[500, 1000, 1500, 2000, 3000],
-            index=0
-        )
-
-        # Get the latest snapshot for ALL channels from the original unfiltered dataframe
+        # --- NEW SECTION: Campaign Performance Summary ---
+        st.markdown("### Campaign Performance Summary")
+        
         latest_snapshot_all = df_long.sort_values('timestamp').groupby('channel').tail(1).reset_index()
 
-        # CRITICAL FIX: Infer active ads from 'ads' value > 0, which is more reliable.
-        low_credit_channels = latest_snapshot_all[
-            (latest_snapshot_all['misc'].notna()) &
-            (latest_snapshot_all['misc'] < credit_threshold) &
-            (latest_snapshot_all['ads'].notna()) &
-            (latest_snapshot_all['ads'] > 0)
-        ].copy()
-
-        if low_credit_channels.empty:
-            st.info(f"No active channels found with credits below {credit_threshold:,.0f}.")
+        if 'campaign' not in latest_snapshot_all.columns:
+            st.warning("'Campaign' column not found. Cannot display campaign performance.")
         else:
-            num_channels = len(low_credit_channels)
-            # CHANGE: Display 6 channels per row
-            num_cols = 6
+            campaign_rows = []
+            for _, row in latest_snapshot_all.iterrows():
+                channel_name = row['channel']
+                campaign_details_list = parse_campaign_details(row['campaign'])
+                for campaign_data in campaign_details_list:
+                    campaign_rows.append({
+                        "Channel": channel_name,
+                        "Campaign ID": campaign_data['id'],
+                        "Budget": campaign_data['budget'],
+                        "Sales": campaign_data['sales'],
+                        "Orders": campaign_data['orders'],
+                        "ROAS": campaign_data['roas'],
+                    })
             
-            low_credit_channels = low_credit_channels.sort_values('misc') # Sort by lowest credit
+            if not campaign_rows:
+                st.info("No active campaign data found in the latest snapshot.")
+            else:
+                campaign_df = pd.DataFrame(campaign_rows)
+                st.dataframe(campaign_df, use_container_width=True)
 
-            for i in range(0, num_channels, num_cols):
-                cols = st.columns(num_cols)
-                row_data = low_credit_channels.iloc[i : i + num_cols]
-                
-                for idx, col in enumerate(cols):
-                    if idx < len(row_data):
-                        channel_info = row_data.iloc[idx]
-                        with col:
-                            st.markdown(f"**{channel_info['channel']}**")
-                            st.markdown(f"เครดิตคงเหลือ: **{channel_info['misc']:,.0f}**")
-                            st.markdown(f"สถานะแอด: **เปิดใช้งาน**")
-                            st.markdown("---")
         
     elif page == "Channel":
         # ... (This page can be updated similarly if needed) ...
