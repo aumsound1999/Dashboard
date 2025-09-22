@@ -274,10 +274,6 @@ def current_and_yesterday_snapshots(df: pd.DataFrame, tz="Asia/Bangkok"):
     return cur_snap, y_snap, cur_ts.floor("H")
 
 def kpis_from_snapshot(snap: pd.DataFrame):
-    """
-    FIX: Ensure all returned values are scalar floats to prevent type errors
-    in downstream formatting, especially in edge cases with single-row dataframes.
-    """
     if snap.empty:
         return dict(Sales=0.0, Orders=0.0, Ads=0.0, SaleRO=np.nan, AdsRO_avg=np.nan)
     
@@ -288,8 +284,6 @@ def kpis_from_snapshot(snap: pd.DataFrame):
     sale_ro = (sales / ads) if ads != 0 else np.nan
     
     ads_ro_vals = snap["ads_ro_raw"]
-    # .mean() on an empty series gives nan, which is a float.
-    # We cast to float() as a safeguard against any non-scalar return types.
     ads_ro_avg = float(ads_ro_vals[ads_ro_vals > 0].mean())
     
     return dict(Sales=sales, Orders=orders, Ads=ads, SaleRO=sale_ro, AdsRO_avg=ads_ro_avg)
@@ -310,9 +304,6 @@ def hourly_latest(df: pd.DataFrame, tz="Asia/Bangkok"):
     return d.reset_index(drop=True)
 
 def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
-    """
-    IMPROVEMENT: เพิ่มการคำนวณ 'sale_day' (ยอดขายสะสม)
-    """
     if df.empty:
         return pd.DataFrame(columns=df.columns.tolist() + ["hour_key", "day", "hstr", "_val"])
 
@@ -324,21 +315,19 @@ def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
         diff_col = H.groupby("channel")[metric].transform(diff_func)
         H["_val"] = diff_col.fillna(0.0)
     elif metric == "sale_day":
-        # 'sale_day' shows the cumulative sales value at that hour
         H["_val"] = H["sales"].fillna(0.0)
     elif metric == "sale_ro":
         ds = H.groupby("channel")["sales"].transform(diff_func).fillna(0.0)
         da = H.groupby("channel")["ads"].transform(diff_func).fillna(0.0).replace(0, np.nan)
         ro = ds / da
-        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50) # Cap at 50 to prevent extreme values
+        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50)
         H["_val"] = ro.fillna(0.0)
     elif metric == "ads_ro":
-        # NEW LOGIC: Calculate true hourly incremental ROAS from ad spend.
         H['sales_from_ads'] = H['ads'] * H['ads_ro_raw']
         ds_from_ads = H.groupby("channel")['sales_from_ads'].transform(diff_func).fillna(0.0)
         da = H.groupby("channel")["ads"].transform(diff_func).fillna(0.0).replace(0, np.nan)
         ro = ds_from_ads / da
-        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50) # Cap at 50
+        ro = ro.replace([np.inf, -np.inf], np.nan).clip(upper=50)
         H["_val"] = ro.fillna(0.0)
     else:
         H["_val"] = 0.0
@@ -347,9 +336,6 @@ def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     return H
 
 def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
-    """
-    FIX: ใช้ aggfunc='mean' สำหรับ ROAS metrics เพื่อไม่ให้ค่าในกราฟสูงผิดปกติ
-    """
     H_with_vals = calculate_hourly_values(df, metric, tz)
     if H_with_vals.empty:
         return pd.DataFrame()
@@ -395,7 +381,7 @@ def main():
         df_long = build_long(wide)
     except Exception as e:
         st.error(f"Failed to load or process data: {e}")
-        st.error("Please check the ROAS_CSV_URL secret and the format of the Google Sheet.")
+        st.error(f"Details: {e}")
         st.stop()
 
     tz = "Asia/Bangkok"
@@ -546,42 +532,17 @@ def main():
                             st.markdown(f"สถานะแอด: **เปิดใช้งาน**")
                             st.markdown("---")
         
-        # --- Campaign Performance Summary Section ---
-        st.markdown("### Campaign Performance Summary")
+        # --- NEW: Raw Data Display Section ---
+        st.markdown("### Campaign Raw Data")
         
-        if 'campaign' not in latest_snapshot_all.columns:
-            st.warning("'Campaign' column not found. Cannot display campaign performance.")
+        # Ensure the first two columns exist before trying to display them
+        if wide.shape[1] >= 2:
+            st.dataframe(wide.iloc[:, :2], use_container_width=True)
         else:
-            campaign_rows = []
-            for _, row in latest_snapshot_all.iterrows():
-                channel_name = row['channel']
-                campaign_details_list = parse_campaign_details(row['campaign'])
-                for campaign_data in campaign_details_list:
-                    campaign_rows.append({
-                        "Channel": channel_name,
-                        "Campaign ID": campaign_data['id'],
-                        "Budget": campaign_data['budget'],
-                        "Ads Spent": campaign_data['Ads Spent'],
-                        "Sales": campaign_data['sales'],
-                        "Orders": campaign_data['orders'],
-                        "View": campaign_data.get('View', np.nan), # Use .get for safety
-                        "ROAS": campaign_data['roas'],
-                    })
-            
-            if not campaign_rows:
-                st.info("No active campaign data found in the latest snapshot.")
-            else:
-                campaign_df = pd.DataFrame(campaign_rows)
-                # Ensure all desired columns exist, adding missing ones with NaN
-                final_cols = ['Channel', 'Campaign ID', 'Budget', 'Ads Spent', 'Orders', 'View', 'Sales', 'ROAS']
-                for col in final_cols:
-                    if col not in campaign_df.columns:
-                        campaign_df[col] = np.nan
-                
-                st.dataframe(campaign_df[final_cols].sort_values("ROAS", ascending=False), use_container_width=True)
+            st.warning("The source data has fewer than 2 columns.")
+
 
     elif page == "Channel":
-        # ... (This page can be updated similarly if needed) ...
         if not all_channels:
              st.warning("No channels found in the data.")
              st.stop()
@@ -606,7 +567,7 @@ def main():
         piv_for_heatmap_ch = None
 
         if metric_ch == "ads_ro & sale_ro":
-            show_heatmap_ch = False # No heatmap for combined view on channel page either
+            show_heatmap_ch = False
             piv_sale_ch = build_overlay_by_day(ch_df, "sale_ro", tz=tz)
             piv_ads_ch = build_overlay_by_day(ch_df, "ads_ro", tz=tz)
             
