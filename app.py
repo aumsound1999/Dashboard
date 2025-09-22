@@ -552,7 +552,7 @@ def main():
             raw_campaign_df.columns = ['channel', 'campaign_data_string']
 
             if view_mode == "แสดงข้อมูลดิบ (Raw)":
-                st.dataframe(raw_campaign_df, use_container_width=True)
+                st.table(raw_campaign_df)
             
             elif view_mode == "แสดงรายละเอียด (Formatted)":
                 all_campaigns = []
@@ -568,12 +568,12 @@ def main():
                 
                 if not all_campaigns:
                     st.info("ไม่สามารถแยกข้อมูลแคมเปญอย่างละเอียดได้ จะแสดงข้อมูลดิบแทน")
-                    st.dataframe(raw_campaign_df, use_container_width=True) # Fallback to raw data
+                    st.table(raw_campaign_df) # Fallback to raw data
                 else:
                     display_df = pd.DataFrame(all_campaigns)
                     cols_order = ['channel', 'id', 'budget', 'sales', 'orders', 'roas']
                     display_df = display_df[[col for col in cols_order if col in display_df.columns]]
-                    st.dataframe(display_df, use_container_width=True)
+                    st.table(display_df)
 
 
     elif page == "Channel":
