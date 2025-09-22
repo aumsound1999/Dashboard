@@ -135,10 +135,6 @@ def parse_metrics_cell(s: str):
         nums.append(np.nan)
     return nums
 
-# This function is no longer needed as we now infer active ads from the 'ads' value.
-# def count_active_campaigns(campaign_string: str) -> int:
-#     ...
-
 # -----------------------------------------------------------------------------
 # Loaders
 # -----------------------------------------------------------------------------
@@ -494,7 +490,6 @@ def main():
         latest_snapshot_all = df_long.sort_values('timestamp').groupby('channel').tail(1).reset_index()
 
         # CRITICAL FIX: Infer active ads from 'ads' value > 0, which is more reliable.
-        # The 'active_ads' column is no longer needed.
         low_credit_channels = latest_snapshot_all[
             (latest_snapshot_all['misc'].notna()) &
             (latest_snapshot_all['misc'] < credit_threshold) &
@@ -517,16 +512,9 @@ def main():
                 for idx, col in enumerate(cols):
                     if idx < len(row_data):
                         channel_info = row_data.iloc[idx]
-                        active_ad_count = channel_info.get('active_ads', 'N/A') # Fallback
-                        if 'campaign' in channel_info:
-                             active_ad_count = count_active_campaigns(channel_info['campaign'])
-
-
                         with col:
                             st.markdown(f"**{channel_info['channel']}**")
                             st.markdown(f"เครดิตคงเหลือ: **{channel_info['misc']:,.0f}**")
-                            # Displaying campaign string for now, since count is not the goal.
-                            # We can show the count if that's preferred.
                             st.markdown(f"สถานะแอด: **เปิดใช้งาน**")
                             st.markdown("---")
         
