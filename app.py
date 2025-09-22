@@ -135,20 +135,9 @@ def parse_metrics_cell(s: str):
         nums.append(np.nan)
     return nums
 
-def count_active_campaigns(campaign_string: str) -> int:
-    """
-    CRITICAL FIX 2: แก้ไข logic การนับให้แม่นยำขึ้น
-    จากการตรวจสอบข้อมูลจริง แคมเปญที่เปิดอยู่จะถูกระบุด้วย pattern 'gmv_', 'ro_' หรือ 'a_'
-    """
-    if not isinstance(campaign_string, str):
-        return 0
-    
-    # Count occurrences of known active campaign patterns, looking for them as distinct string literals
-    gmv_campaigns = campaign_string.count("'gmv_")
-    ro_campaigns = campaign_string.count("'ro_")
-    a_campaigns = campaign_string.count("'a_")
-    
-    return gmv_campaigns + ro_campaigns + a_campaigns
+# This function is no longer needed as we now infer active ads from the 'ads' value.
+# def count_active_campaigns(campaign_string: str) -> int:
+#     ...
 
 # -----------------------------------------------------------------------------
 # Loaders
@@ -504,37 +493,42 @@ def main():
         # Get the latest snapshot for ALL channels from the original unfiltered dataframe
         latest_snapshot_all = df_long.sort_values('timestamp').groupby('channel').tail(1).reset_index()
 
-        if 'campaign' not in latest_snapshot_all.columns:
-            st.warning("'Campaign' column not found. Cannot display credit alerts.")
+        # CRITICAL FIX: Infer active ads from 'ads' value > 0, which is more reliable.
+        # The 'active_ads' column is no longer needed.
+        low_credit_channels = latest_snapshot_all[
+            (latest_snapshot_all['misc'].notna()) &
+            (latest_snapshot_all['misc'] < credit_threshold) &
+            (latest_snapshot_all['ads'].notna()) &
+            (latest_snapshot_all['ads'] > 0)
+        ].copy()
+
+        if low_credit_channels.empty:
+            st.info(f"No active channels found with credits below {credit_threshold:,.0f}.")
         else:
-            latest_snapshot_all['active_ads'] = latest_snapshot_all['campaign'].apply(count_active_campaigns)
+            num_channels = len(low_credit_channels)
+            num_cols = 3  # Display 3 channels per row
             
-            low_credit_channels = latest_snapshot_all[
-                (latest_snapshot_all['misc'].notna()) &
-                (latest_snapshot_all['misc'] < credit_threshold) &
-                (latest_snapshot_all['active_ads'] > 0)
-            ].copy()
+            low_credit_channels = low_credit_channels.sort_values('misc') # Sort by lowest credit
 
-            if low_credit_channels.empty:
-                st.info(f"No active channels found with credits below {credit_threshold:,.0f}.")
-            else:
-                num_channels = len(low_credit_channels)
-                num_cols = 3  # Display 3 channels per row
+            for i in range(0, num_channels, num_cols):
+                cols = st.columns(num_cols)
+                row_data = low_credit_channels.iloc[i : i + num_cols]
                 
-                low_credit_channels = low_credit_channels.sort_values('misc') # Sort by lowest credit
+                for idx, col in enumerate(cols):
+                    if idx < len(row_data):
+                        channel_info = row_data.iloc[idx]
+                        active_ad_count = channel_info.get('active_ads', 'N/A') # Fallback
+                        if 'campaign' in channel_info:
+                             active_ad_count = count_active_campaigns(channel_info['campaign'])
 
-                for i in range(0, num_channels, num_cols):
-                    cols = st.columns(num_cols)
-                    row_data = low_credit_channels.iloc[i : i + num_cols]
-                    
-                    for idx, col in enumerate(cols):
-                        if idx < len(row_data):
-                            channel_info = row_data.iloc[idx]
-                            with col:
-                                st.markdown(f"**{channel_info['channel']}**")
-                                st.markdown(f"เครดิตคงเหลือ: **{channel_info['misc']:,.0f}**")
-                                st.markdown(f"แอดที่เปิด: **{channel_info['active_ads']}** แคมเปญ")
-                                st.markdown("---")
+
+                        with col:
+                            st.markdown(f"**{channel_info['channel']}**")
+                            st.markdown(f"เครดิตคงเหลือ: **{channel_info['misc']:,.0f}**")
+                            # Displaying campaign string for now, since count is not the goal.
+                            # We can show the count if that's preferred.
+                            st.markdown(f"สถานะแอด: **เปิดใช้งาน**")
+                            st.markdown("---")
         
     elif page == "Channel":
         # ... (This page can be updated similarly if needed) ...
