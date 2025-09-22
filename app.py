@@ -229,14 +229,24 @@ def current_and_yesterday_snapshots(df: pd.DataFrame, tz="Asia/Bangkok"):
     return cur_snap, y_snap, cur_ts.floor("H")
 
 def kpis_from_snapshot(snap: pd.DataFrame):
+    """
+    FIX: Ensure all returned values are scalar floats to prevent type errors
+    in downstream formatting, especially in edge cases with single-row dataframes.
+    """
     if snap.empty:
-        return dict(Sales=0, Orders=0, Ads=0, SaleRO=np.nan, AdsRO_avg=np.nan)
-    sales = snap["sales"].sum()
-    orders = snap["orders"].sum()
-    ads = snap["ads"].sum()
+        return dict(Sales=0.0, Orders=0.0, Ads=0.0, SaleRO=np.nan, AdsRO_avg=np.nan)
+    
+    sales = float(snap["sales"].sum())
+    orders = float(snap["orders"].sum())
+    ads = float(snap["ads"].sum())
+    
     sale_ro = (sales / ads) if ads != 0 else np.nan
+    
     ads_ro_vals = snap["ads_ro_raw"]
-    ads_ro_avg = ads_ro_vals[ads_ro_vals > 0].mean()
+    # .mean() on an empty series gives nan, which is a float.
+    # We cast to float() as a safeguard against any non-scalar return types.
+    ads_ro_avg = float(ads_ro_vals[ads_ro_vals > 0].mean())
+    
     return dict(Sales=sales, Orders=orders, Ads=ads, SaleRO=sale_ro, AdsRO_avg=ads_ro_avg)
 
 def pct_delta(curr, prev):
