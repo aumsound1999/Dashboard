@@ -33,22 +33,23 @@ def is_time_col(col: str) -> bool:
 
 def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") -> dict:
     """
-    IMPROVEMENT: แก้ปัญหาการ parse timestamp ข้ามเดือน/ปี
-    ฟังก์ชันนี้จะทำงานโดยการยึดคอลัมน์เวลาล่าสุดเป็นหลัก แล้วไล่เวลาย้อนกลับไปข้างหลัง
-    เพื่อแก้ปัญหาการคำนวณเดือน/ปีผิดพลาดเมื่อข้อมูลคร่อมเดือน
+    CRITICAL FIX: แก้ไข Logic การอ่านเวลาให้ถูกต้องตามโครงสร้างไฟล์
+    - ยึดคอลัมน์เวลา 'แรกสุด' (ซ้ายสุด) เป็นข้อมูลล่าสุด
+    - คำนวณเวลาย้อนหลังไปยังคอลัมน์ทางขวา
     """
     timestamps = {}
     now = pd.Timestamp.now(tz=tz)
     
+    # Get only the columns that match the time format, in their original order
     time_cols_only = [h for h in headers if is_time_col(h)]
     if not time_cols_only:
         return {h: pd.NaT for h in headers}
 
     temp_timestamps = {}
-    last_ts = pd.NaT
+    previous_ts = pd.NaT
 
-    # Iterate backwards through the time columns, assuming original order is chronological
-    for hdr in reversed(time_cols_only):
+    # Iterate FORWARDS through the time columns, as the first one is the latest
+    for hdr in time_cols_only:
         hdr_strip = hdr.strip()
         m = re.match(r"^[A-Z](\d{1,2})\s+(\d{1,2}):(\d{1,2})$", hdr_strip)
         if not m:
@@ -56,49 +57,55 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
         
         d, hh, mm = map(int, m.groups())
         
-        if pd.isna(last_ts):
-            # This is the last chronological column. Anchor it based on the current time.
+        if pd.isna(previous_ts):
+            # ANCHORING LOGIC: This runs only for the very first time column found
+            # Assume its day number 'd' refers to a date at or before 'now'.
+            # Start with today and go backwards until we find a matching day number.
+            anchor_date_candidate = now
+            for _ in range(45):  # Safety break after 45 days
+                if anchor_date_candidate.day == d:
+                    break
+                anchor_date_candidate -= pd.Timedelta(days=1)
+            else:
+                temp_timestamps[hdr] = pd.NaT
+                continue
+            
             try:
-                ts = pd.Timestamp(year=now.year, month=now.month, day=d, hour=hh, minute=mm, tz=tz)
-                # If the generated timestamp is in the future, it must be from the previous month.
-                if ts > now:
-                    ts -= pd.DateOffset(months=1)
+                ts = pd.Timestamp(year=anchor_date_candidate.year, month=anchor_date_candidate.month, day=d, hour=hh, minute=mm, tz=tz)
                 temp_timestamps[hdr] = ts
-                last_ts = ts
+                previous_ts = ts
             except ValueError:
-                # Handle invalid dates like 'Feb 30'. Assume it's from the previous month.
-                try:
-                    prev_month_date = now - pd.DateOffset(months=1)
-                    ts = pd.Timestamp(year=prev_month_date.year, month=prev_month_date.month, day=d, hour=hh, minute=mm, tz=tz)
-                    temp_timestamps[hdr] = ts
-                    last_ts = ts
-                except ValueError:
-                    temp_timestamps[hdr] = pd.NaT
+                temp_timestamps[hdr] = pd.NaT
+
         else:
-            # For all preceding columns, create a timestamp relative to the previously processed one.
+            # ITERATION LOGIC: For all subsequent (older) time columns
             try:
-                ts = pd.Timestamp(year=last_ts.year, month=last_ts.month, day=d, hour=hh, minute=mm, tz=tz)
-                # If this new timestamp is later than the one that came after it,
-                # it means we have crossed a month/year boundary going backwards.
-                if ts > last_ts:
+                # Tentatively create a timestamp using the year/month of the previous (newer) data point
+                ts = pd.Timestamp(year=previous_ts.year, month=previous_ts.month, day=d, hour=hh, minute=mm, tz=tz)
+                
+                # The current timestamp must be EARLIER than the previous one.
+                # If it's not, it means we've crossed a month boundary going backwards in time.
+                if ts >= previous_ts:
                     ts -= pd.DateOffset(months=1)
+                
                 temp_timestamps[hdr] = ts
-                last_ts = ts # The new "last" timestamp is the one we just processed
+                previous_ts = ts
             except ValueError:
-                # Handle invalid dates by trying the month before the last valid one.
+                # This can happen if a day 'd' doesn't exist in the guessed month (e.g. 31 in Feb)
                 try:
-                    prev_month_date = last_ts - pd.DateOffset(months=1)
+                    prev_month_date = previous_ts - pd.DateOffset(months=1)
                     ts = pd.Timestamp(year=prev_month_date.year, month=prev_month_date.month, day=d, hour=hh, minute=mm, tz=tz)
                     temp_timestamps[hdr] = ts
-                    last_ts = ts
+                    previous_ts = ts
                 except ValueError:
                     temp_timestamps[hdr] = pd.NaT
 
-    # Map the parsed timestamps back to the full list of headers
+    # Map the parsed timestamps back to the full list of original headers
     for hdr in headers:
         timestamps[hdr] = temp_timestamps.get(hdr, pd.NaT)
         
     return timestamps
+
 
 def parse_metrics_cell(s: str):
     """
@@ -138,16 +145,19 @@ def load_wide_df():
 
 def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
     id_cols, time_cols = [], []
+    # Preserve original column order by iterating through df_wide.columns
     for c in df_wide.columns:
-        if str(c).strip().lower() == "name":
+        c_str = str(c).strip()
+        if c_str.lower() == "name":
             id_cols.append(c)
-        elif is_time_col(str(c)):
+        elif is_time_col(c_str):
             time_cols.append(c)
     
     if not time_cols:
         raise ValueError("No time columns detected. Expect headers like 'D21 12:45'.")
 
-    ts_map = parse_timestamps_from_headers(time_cols, tz=tz)
+    # Pass all columns to preserve order, function will filter internally
+    ts_map = parse_timestamps_from_headers(df_wide.columns, tz=tz)
 
     m = df_wide.melt(id_vars=id_cols, value_vars=time_cols,
                      var_name="time_col", value_name="raw")
