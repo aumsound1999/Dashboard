@@ -505,6 +505,7 @@ def main():
             latest_snapshot_all['active_ads'] = latest_snapshot_all['campaign'].apply(count_active_campaigns)
             
             low_credit_channels = latest_snapshot_all[
+                (latest_snapshot_all['misc'].notna()) &
                 (latest_snapshot_all['misc'] < credit_threshold) &
                 (latest_snapshot_all['active_ads'] > 0)
             ].copy()
@@ -529,6 +530,17 @@ def main():
                                 st.markdown(f"เครดิตคงเหลือ: **{channel_info['misc']:,.0f}**")
                                 st.markdown(f"แอดที่เปิด: **{channel_info['active_ads']}** แคมเปญ")
                                 st.markdown("---")
+        
+        # --- NEW DIAGNOSTIC SECTION ---
+        with st.expander("🕵️‍♀️ Diagnostic Data: Click to see the data used for the credit alert"):
+            st.markdown("This table shows the single latest data point for each channel that the app is using to check for low credits.")
+            if 'campaign' not in latest_snapshot_all.columns:
+                 st.warning("'Campaign' column not found.")
+            else:
+                if 'active_ads' not in latest_snapshot_all.columns:
+                     latest_snapshot_all['active_ads'] = latest_snapshot_all['campaign'].apply(count_active_campaigns)
+                
+                st.dataframe(latest_snapshot_all[['channel', 'timestamp', 'campaign', 'misc', 'active_ads']].sort_values('channel'))
 
 
     elif page == "Channel":
