@@ -8,7 +8,7 @@
 import os
 import io
 import re
-from datetime import timedelta
+from datetime import timedelta, date as date_type
 import numpy as np
 import pandas as pd
 import requests
@@ -113,7 +113,6 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
     if not time_cols:
         raise ValueError("No time columns detected. Expect headers like 'D21 12:45'.")
 
-    # IMPROVEMENT: เรียกใช้ฟังก์ชัน parse timestamp ที่ฉลาดขึ้น
     ts_map = parse_timestamps_from_headers(time_cols, tz=tz)
 
     m = df_wide.melt(id_vars=id_cols, value_vars=time_cols,
@@ -125,7 +124,6 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
     out = pd.concat([m[["timestamp"] + id_cols], V], axis=1).rename(columns={"name": "channel"})
     out = out.dropna(subset=["timestamp"]).reset_index(drop=True)
 
-    # IMPROVEMENT: สร้างคอลัมน์ metrics จาก list ที่กำหนดไว้
     for i, name in enumerate(METRIC_COLUMNS):
         out[name] = pd.to_numeric(out[f"v{i}"], errors="coerce")
     
@@ -202,9 +200,13 @@ def hourly_latest(df: pd.DataFrame, tz="Asia/Bangkok"):
     d["hstr"] = d["hour_key"].dt.strftime("%H:%M")
     return d.reset_index(drop=True)
 
-def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
+def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
+    """
+    REFACTOR: แยก Logic การคำนวณรายชั่วโมงออกมา เพื่อให้เรียกใช้ซ้ำและทดสอบได้ง่าย
+    """
     if df.empty:
-        return pd.DataFrame()
+        # Return a dataframe with expected columns to prevent downstream errors
+        return pd.DataFrame(columns=df.columns.tolist() + ["hour_key", "day", "hstr", "_val"])
 
     H = hourly_latest(df, tz=tz).sort_values(["channel", "hour_key"])
     
@@ -223,8 +225,17 @@ def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
         H["_val"] = ro.fillna(0.0)
     else:
         H["_val"] = 0.0
+    return H
 
-    pivot = H.pivot_table(index="hstr", columns="day", values="_val", aggfunc="sum").sort_index()
+def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
+    """
+    REFACTOR: ใช้ฟังก์ชัน calculate_hourly_values เพื่อความสะอาดของโค้ด
+    """
+    H_with_vals = calculate_hourly_values(df, metric, tz)
+    if H_with_vals.empty:
+        return pd.DataFrame()
+    
+    pivot = H_with_vals.pivot_table(index="hstr", columns="day", values="_val", aggfunc="sum").sort_index()
     return pivot
 
 # -----------------------------------------------------------------------------
@@ -256,7 +267,6 @@ def display_kpi_metrics(cur: dict, prev: dict, snapshot_hour):
 # --- Sidebar ---
 st.sidebar.header("Filters")
 if st.sidebar.button("Reload Data", use_container_width=True):
-    # IMPROVEMENT: เคลียร์ cache ทั้งหมดทีเดียว
     st.cache_data.clear()
     st.experimental_rerun()
 
@@ -282,7 +292,8 @@ d1, d2 = st.sidebar.date_input(
     min_value=min_ts.date(),
     max_value=date_max,
 )
-if not isinstance(d1, pd.Timestamp.date_type) or not isinstance(d2, pd.Timestamp.date_type):
+# FIX: แก้ไข TypeError โดยการตรวจสอบกับ date_type ที่ import มา
+if not isinstance(d1, date_type) or not isinstance(d2, date_type):
     st.warning("Please select a valid date range.")
     st.stop()
     
@@ -392,10 +403,8 @@ elif page == "Compare":
         st.warning("No data for the selected channels in this period.")
         st.stop()
 
-    H = hourly_latest(sub, tz=tz)
-
     st.markdown("#### Cumulative KPI Comparison")
-    # IMPROVEMENT: คำนวณ KPI จากค่าล่าสุด ไม่ใช่ค่าเฉลี่ยรายชั่วโมง
+    H = hourly_latest(sub, tz=tz)
     latest_snap = H.sort_values("hour_key").groupby("channel").tail(1)
     kpi_comparison = latest_snap.groupby("channel").agg(
         Total_Sales=("sales", "sum"),
@@ -411,20 +420,21 @@ elif page == "Compare":
     met_display = st.selectbox("Metric", options=list(met_options.keys()), index=0)
     met = met_options[met_display]
 
-    piv = build_overlay_by_day(sub, met, tz=tz)
-    
-    # Filter pivot to only include selected channels
-    piv_filtered_channels = H[H['channel'].isin(pick)]
-    piv = build_overlay_by_day(piv_filtered_channels, met, tz=tz)
-
-    # Pivot for comparison needs to be by channel
-    piv_compare = piv_filtered_channels.pivot_table(index="hour_key", columns="channel", values="_val", aggfunc="sum").sort_index()
+    # REFACTOR: เรียกใช้ฟังก์ชันที่แยกออกมาเพื่อคำนวณค่ารายชั่วโมง
+    H_with_vals = calculate_hourly_values(sub, met, tz=tz)
+    if H_with_vals.empty:
+        st.warning("No hourly data to compare for the selected metric.")
+        st.stop()
+        
+    piv_compare = H_with_vals.pivot_table(index="hour_key", columns="channel", values="_val", aggfunc="sum").fillna(0)
 
     if base not in piv_compare.columns:
         st.warning(f"Baseline channel '{base}' has no data for this metric. Please choose another.")
         st.stop()
         
-    rel = (piv_compare.div(piv_compare[base], axis=0) - 1.0) * 100.0
+    # IMPROVEMENT: ป้องกันการหารด้วยศูนย์
+    base_series = piv_compare[base].replace(0, np.nan)
+    rel = (piv_compare.div(base_series, axis=0) - 1.0) * 100.0
 
     fig = go.Figure()
     for c in rel.columns:
@@ -433,3 +443,4 @@ elif page == "Compare":
     
     fig.update_layout(height=420, xaxis_title="Hour", yaxis_title=f"% Difference in {met_display} vs {base}")
     st.plotly_chart(fig, use_container_width=True)
+
