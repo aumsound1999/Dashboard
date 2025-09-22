@@ -1,18 +1,17 @@
 # app.py
-# Final Version with Campaign Performance Table
+# Final, fully functional version
 
 import io
 import re
-import pandas as pd
-import requests
-import streamlit as st
 import ast
 from datetime import timedelta, date as date_type
 import numpy as np
+import pandas as pd
+import requests
+import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 
-# CRITICAL FIX: st.set_page_config must be the first Streamlit command and only called once.
 st.set_page_config(page_title="Shopee ROAS", layout="wide")
 
 # Constants for easier maintenance
@@ -92,27 +91,18 @@ def parse_metrics_cell(s: str):
     return nums
 
 def extract_campaign_details(campaign_string: str) -> list:
-    """
-    FINAL ROBUST LOGIC v2:
-    Extracts the full performance data for each real campaign.
-    A real campaign is a list with at least 7 elements (ID + 6 metrics).
-    """
-    if not isinstance(campaign_string, str):
-        return []
-
+    if not isinstance(campaign_string, str): return []
     try:
         campaign_list = ast.literal_eval(campaign_string)
         parsed_data = []
-        if not isinstance(campaign_list, list):
-            return []
-        
+        if not isinstance(campaign_list, list): return []
         for item in campaign_list:
             if isinstance(item, list) and len(item) > 6:
                 try:
                     details = {
                         "Campaign ID": item[0],
                         "Budget": item[1],
-                        "Ads Spent": item[2], # เงินที่ใช้
+                        "Ads Spent": item[2],
                         "Orders": item[3],
                         "View": item[4],
                         "Sales": item[5],
@@ -168,7 +158,6 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
 def build_long(wide):
     return long_from_wide(wide)
 
-# ... (Other transformation functions remain the same)
 def safe_tz(ts: pd.Series, tz="Asia/Bangkok"):
     ts = pd.to_datetime(ts, errors="coerce")
     if ts.dt.tz is None: return ts.dt.tz_localize(tz)
@@ -220,12 +209,31 @@ def kpis_from_snapshot(snap: pd.DataFrame):
     ads_ro_avg = float(ads_ro_vals[ads_ro_vals > 0].mean())
     return dict(Sales=sales, Orders=orders, Ads=ads, SaleRO=sale_ro, AdsRO_avg=ads_ro_avg)
 
+def pick_snapshot_at(df: pd.DataFrame, at_ts: pd.Timestamp, tz: str = "Asia/Bangkok") -> pd.DataFrame:
+    if df is None or df.empty: return pd.DataFrame()
+    df = df.copy()
+    if "timestamp" in df.columns:
+        df["hour_key"] = safe_tz(df["timestamp"], tz=tz).dt.floor("H")
+    target_hour = safe_tz(pd.Series([at_ts]), tz=tz).dt.floor("H").iloc[0]
+    y = df[df["hour_key"] == target_hour].copy()
+    if y.empty: return pd.DataFrame()
+    y = y.sort_values("timestamp")
+    if "channel" in y.columns:
+        return y.groupby("channel").tail(1).reset_index(drop=True)
+    return y.tail(1).reset_index(drop=True)
+
+def current_and_yesterday_snapshots(df: pd.DataFrame, tz="Asia/Bangkok"):
+    if df.empty: return pd.DataFrame(), pd.DataFrame(), pd.NaT
+    cur_ts = df["timestamp"].max()
+    cur_snap = pick_snapshot_at(df, cur_ts, tz=tz)
+    y_snap = pick_snapshot_at(df, cur_ts - pd.Timedelta(days=1), tz=tz)
+    return cur_snap, y_snap, cur_ts.floor("H")
+
 # -----------------------------------------------------------------------------
 # Main App
 # -----------------------------------------------------------------------------
 
 def main():
-    # CRITICAL FIX: Removed the duplicate st.set_page_config call from here.
     st.title("Shopee ROAS Dashboard")
 
     try:
@@ -240,7 +248,6 @@ def main():
         st.cache_data.clear()
         st.experimental_rerun()
 
-    # --- Sidebar Filters ---
     min_ts = df_long["timestamp"].min()
     max_ts = df_long["timestamp"].max()
     d1, d2 = st.sidebar.date_input(
@@ -257,18 +264,15 @@ def main():
     chosen = st.sidebar.multiselect("Channels", options=["[All]"] + all_channels, default=["[All]"])
     selected_channels = all_channels if "[All]" in chosen or not chosen else chosen
     
-    # --- Filter Data ---
     mask = (df_long["timestamp"].between(start_ts, end_ts)) & (df_long["channel"].isin(selected_channels))
     d_filtered = df_long.loc[mask].copy()
 
-    # --- Main Page Display ---
     st.caption(f"Last refresh: {pd.Timestamp.now(tz='Asia/Bangkok').strftime('%Y-%m-%d %H:%M:%S')}")
     if d_filtered.empty:
         st.warning("No data in selected period.")
         st.stop()
     
-    # KPIs
-    cur_snap, y_snap, _ = current_and_yesterday_snapshots(d_filtered, tz="Asia/Bangkok")
+    cur_snap, y_snap, cur_hour = current_and_yesterday_snapshots(d_filtered, tz="Asia/Bangkok")
     cur_kpis = kpis_from_snapshot(cur_snap)
     prev_kpis = kpis_from_snapshot(y_snap)
     
@@ -279,12 +283,20 @@ def main():
     cols[3].metric("SaleRO", f"{cur_kpis['SaleRO']:.2f}" if pd.notna(cur_kpis['SaleRO']) else "-", delta=f"{(cur_kpis['SaleRO'] - prev_kpis['SaleRO']):.2f}" if pd.notna(cur_kpis['SaleRO']) and pd.notna(prev_kpis['SaleRO']) else None)
     cols[4].metric("AdsRO Avg", f"{cur_kpis['AdsRO_avg']:.2f}" if pd.notna(cur_kpis['AdsRO_avg']) else "-", delta=f"{(cur_kpis['AdsRO_avg'] - prev_kpis['AdsRO_avg']):.2f}" if pd.notna(cur_kpis['AdsRO_avg']) and pd.notna(prev_kpis['AdsRO_avg']) else None)
 
-    # Hourly Overlay
     st.markdown("### Hourly Performance Overlay")
-    metric_options = ["sales", "orders", "ads", "sale_ro", "ads_ro", "sale_day", "ads_ro & sale_ro"]
-    metric = st.selectbox("Metric to plot:", options=metric_options, index=0)
+    metric = st.selectbox("Metric to plot:", options=["sales", "orders", "ads", "sale_ro", "ads_ro", "sale_day"])
 
-    # Campaign Performance
+    piv = build_overlay_by_day(d_filtered, metric, tz="Asia/Bangkok")
+    if piv.empty:
+        st.info("No data to plot for the selected metric.")
+    else:
+        fig = go.Figure()
+        for day in piv.columns:
+            fig.add_trace(go.Scatter(x=piv.index, y=piv[day], mode="lines+markers", name=str(day)))
+        title = "Cumulative Sales" if metric == "sale_day" else f"Hourly {metric.replace('_', ' ').title()}"
+        fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=title)
+        st.plotly_chart(fig, use_container_width=True)
+
     st.markdown("### Campaign Performance Summary")
     latest_snapshot_all = df_long.sort_values('timestamp').groupby('channel').tail(1)
     
@@ -302,7 +314,6 @@ def main():
             st.info("No active campaign data found in the latest snapshot.")
         else:
             campaign_df = pd.DataFrame(all_campaigns)
-            # Reorder columns for better readability
             cols_order = ['Channel', 'Campaign ID', 'Budget', 'Ads Spent', 'Orders', 'View', 'Sales', 'ROAS']
             campaign_df = campaign_df[cols_order]
             st.dataframe(campaign_df.sort_values("ROAS", ascending=False), use_container_width=True)
