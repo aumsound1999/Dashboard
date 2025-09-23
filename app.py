@@ -559,10 +559,12 @@ def main():
                 latest_daily_stats.rename(columns={'ads_ro_raw': 'ads_ro_day'}, inplace=True)
                 
                 all_rows_to_display = []
+                channel_count = 0
                 
                 unique_channels = campaign_data_df['channel'].unique()
 
                 for channel_name in unique_channels:
+                    channel_count += 1
                     is_first_row_for_channel = True
                     
                     details_string = campaign_data_df[campaign_data_df['channel'] == channel_name]['campaign_data_string'].iloc[0]
@@ -582,37 +584,44 @@ def main():
 
                     if not parsed_campaigns:
                         row_data = {
+                            'No.': str(channel_count),
                             'channel': channel_name,
-                            'type': setting_info.get('type', ''),
-                            'GMV_Q': setting_info.get('gmv_quota', np.nan),
-                            'GMV_U': setting_info.get('gmv_user', np.nan),
-                            'AUTO_Q': setting_info.get('auto_quota', np.nan),
-                            'AUTO_U': setting_info.get('auto_user', np.nan),
+                            'type': str(setting_info.get('type', '')),
+                            'GMV_Q': str(setting_info.get('gmv_quota', '')),
+                            'GMV_U': str(setting_info.get('gmv_user', '')),
+                            'AUTO_Q': str(setting_info.get('auto_quota', '')),
+                            'AUTO_U': str(setting_info.get('auto_user', '')),
                             'id': '',
-                            'budget': np.nan,
-                            'sales': np.nan,
-                            'orders': np.nan,
-                            'roas': np.nan,
-                            'SaleRO (Day)': sale_ro_day_val,
-                            'AdsRO (Day)': ads_ro_day_val,
+                            'budget': '',
+                            'sales': '',
+                            'orders': '',
+                            'roas': '',
+                            'SaleRO (Day)': f"{sale_ro_day_val:.2f}" if pd.notna(sale_ro_day_val) else '',
+                            'AdsRO (Day)': f"{ads_ro_day_val:.2f}" if pd.notna(ads_ro_day_val) else '',
                         }
                         all_rows_to_display.append(row_data)
                     else:
                         for campaign in parsed_campaigns:
+                            budget_val = campaign.get('budget')
+                            sales_val = campaign.get('sales')
+                            orders_val = campaign.get('orders')
+                            roas_val = campaign.get('roas')
+                            
                             row_data = {
-                                'channel': channel_name,
-                                'type': setting_info.get('type') if is_first_row_for_channel else '',
-                                'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else np.nan,
-                                'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else np.nan,
-                                'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else np.nan,
-                                'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else np.nan,
-                                'id': campaign.get('id', ''),
-                                'budget': campaign.get('budget'),
-                                'sales': campaign.get('sales'),
-                                'orders': campaign.get('orders'),
-                                'roas': campaign.get('roas'),
-                                'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
-                                'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
+                                'No.': str(channel_count) if is_first_row_for_channel else '',
+                                'channel': channel_name if is_first_row_for_channel else '',
+                                'type': str(setting_info.get('type', '')) if is_first_row_for_channel else '',
+                                'GMV_Q': str(setting_info.get('gmv_quota', '')) if is_first_row_for_channel else '',
+                                'GMV_U': str(setting_info.get('gmv_user', '')) if is_first_row_for_channel else '',
+                                'AUTO_Q': str(setting_info.get('auto_quota', '')) if is_first_row_for_channel else '',
+                                'AUTO_U': str(setting_info.get('auto_user', '')) if is_first_row_for_channel else '',
+                                'id': str(campaign.get('id', '')),
+                                'budget': f"{budget_val:,.0f}" if pd.notna(budget_val) else '',
+                                'sales': f"{sales_val:,.0f}" if pd.notna(sales_val) else '',
+                                'orders': f"{orders_val:,.0f}" if pd.notna(orders_val) else '',
+                                'roas': f"{roas_val:.2f}" if pd.notna(roas_val) else '',
+                                'SaleRO (Day)': f"{sale_ro_day_val:.2f}" if is_first_row_for_channel and pd.notna(sale_ro_day_val) else '',
+                                'AdsRO (Day)': f"{ads_ro_day_val:.2f}" if is_first_row_for_channel and pd.notna(ads_ro_day_val) else '',
                             }
                             all_rows_to_display.append(row_data)
                             is_first_row_for_channel = False
@@ -621,31 +630,10 @@ def main():
                     st.info("ไม่พบข้อมูลแคมเปญที่สามารถจัดรูปแบบได้")
                 else:
                     display_df = pd.DataFrame(all_rows_to_display)
-                    # Add No. column
-                    display_df.insert(0, 'No.', range(1, len(display_df) + 1))
-                    
-                    # Calculate height for dataframe to avoid scrollbar
-                    height = (len(display_df) + 1) * 35 + 3
+                    # ตั้งค่า No. เป็น index เพื่อแสดงผล
+                    final_df = display_df.set_index('No.')
+                    st.table(final_df)
 
-                    # Define formatters for styling
-                    formatters = {
-                        'budget': '{:,.0f}',
-                        'sales': '{:,.0f}',
-                        'orders': '{:,.0f}',
-                        'roas': '{:.2f}',
-                        'SaleRO (Day)': '{:.2f}',
-                        'AdsRO (Day)': '{:.2f}',
-                        'GMV_Q': '{:.1f}',
-                        'GMV_U': '{:.0f}',
-                        'AUTO_Q': '{:.1f}',
-                        'AUTO_U': '{:.0f}',
-                    }
-
-                    st.dataframe(
-                        display_df.style.format(formatters, na_rep=''),
-                        use_container_width=True,
-                        height=height
-                    )
 
     elif page == "Channel":
         if not all_channels:
