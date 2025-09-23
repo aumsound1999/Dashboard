@@ -553,6 +553,11 @@ def main():
                 st.table(campaign_data_df)
             
             elif view_mode == "แสดงรายละเอียด (Formatted)":
+                # Prepare latest daily stats for merging
+                latest_daily_stats = df_long.loc[df_long.groupby('channel')['timestamp'].idxmax()].copy()
+                latest_daily_stats['sale_ro_day'] = latest_daily_stats['sales'] / latest_daily_stats['ads'].replace(0, np.nan)
+                latest_daily_stats.rename(columns={'ads_ro_raw': 'ads_ro_day'}, inplace=True)
+                
                 all_rows_to_display = []
                 channel_count = 0
                 
@@ -564,7 +569,6 @@ def main():
                     
                     details_string = campaign_data_df[campaign_data_df['channel'] == channel_name]['campaign_data_string'].iloc[0]
                     
-                    # Parse the full dictionary to get settings and campaigns
                     try:
                         data_dict = ast.literal_eval(details_string)
                         setting_info = data_dict.get('setting', {})
@@ -573,8 +577,12 @@ def main():
                         setting_info = {}
                         parsed_campaigns = []
                     
+                    # Get daily ROAS stats for the current channel
+                    channel_stats = latest_daily_stats[latest_daily_stats['channel'] == channel_name]
+                    sale_ro_day_val = channel_stats['sale_ro_day'].iloc[0] if not channel_stats.empty else None
+                    ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else None
+
                     if not parsed_campaigns:
-                        # แสดงแถวสำหรับร้านที่ไม่มีแคมเปญ
                         row_data = {
                             'No.': channel_count,
                             'channel': channel_name,
@@ -587,11 +595,12 @@ def main():
                             'budget': '-',
                             'sales': '-',
                             'orders': '-',
-                            'roas': '-'
+                            'roas': '-',
+                            'SaleRO (Day)': f"{sale_ro_day_val:,.2f}" if pd.notna(sale_ro_day_val) else '-',
+                            'AdsRO (Day)': f"{ads_ro_day_val:,.2f}" if pd.notna(ads_ro_day_val) else '-',
                         }
                         all_rows_to_display.append(row_data)
                     else:
-                        # แสดงแถวสำหรับร้านที่มีแคมเปญ
                         for campaign in parsed_campaigns:
                             budget_val = campaign.get('budget')
                             sales_val = campaign.get('sales')
@@ -610,7 +619,9 @@ def main():
                                 'budget': f"{budget_val:,.0f}" if isinstance(budget_val, (int, float)) else '-',
                                 'sales': f"{sales_val:,.0f}" if isinstance(sales_val, (int, float)) else '-',
                                 'orders': f"{orders_val:,.0f}" if isinstance(orders_val, (int, float)) else '-',
-                                'roas': f"{roas_val:,.2f}" if isinstance(roas_val, (int, float)) else '-'
+                                'roas': f"{roas_val:,.2f}" if isinstance(roas_val, (int, float)) else '-',
+                                'SaleRO (Day)': f"{sale_ro_day_val:,.2f}" if is_first_row_for_channel and pd.notna(sale_ro_day_val) else '',
+                                'AdsRO (Day)': f"{ads_ro_day_val:,.2f}" if is_first_row_for_channel and pd.notna(ads_ro_day_val) else '',
                             }
                             all_rows_to_display.append(row_data)
                             is_first_row_for_channel = False
@@ -620,7 +631,7 @@ def main():
                 else:
                     display_df = pd.DataFrame(all_rows_to_display)
                     # Reorder columns
-                    cols_order = ['No.', 'channel', 'type', 'GMV_Q', 'GMV_U', 'AUTO_Q', 'AUTO_U', 'id', 'budget', 'sales', 'orders', 'roas']
+                    cols_order = ['No.', 'channel', 'type', 'GMV_Q', 'GMV_U', 'AUTO_Q', 'AUTO_U', 'id', 'budget', 'sales', 'orders', 'roas', 'SaleRO (Day)', 'AdsRO (Day)']
                     display_df = display_df[cols_order]
                     # ตั้งค่า No. เป็น index เพื่อแสดงผล
                     final_df = display_df.set_index('No.')
