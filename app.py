@@ -627,32 +627,25 @@ def main():
                     # Calculate height for dataframe to avoid scrollbar
                     height = (len(display_df) + 1) * 35 + 3
 
-                    # Configure columns for width and formatting
-                    column_config={
-                        "No.": st.column_config.NumberColumn(width="small"),
-                        "channel": st.column_config.TextColumn(width="medium"),
-                        "type": st.column_config.TextColumn(width="small"),
-                        "GMV_Q": st.column_config.NumberColumn("GMV Q", width="small"),
-                        "GMV_U": st.column_config.NumberColumn("GMV U", width="small"),
-                        "AUTO_Q": st.column_config.NumberColumn("AUTO Q", width="small"),
-                        "AUTO_U": st.column_config.NumberColumn("AUTO U", width="small"),
-                        "id": st.column_config.TextColumn("Campaign ID", width="medium"),
-                        "budget": st.column_config.NumberColumn(format="%.0f"),
-                        "sales": st.column_config.NumberColumn(format="%.0f"),
-                        "orders": st.column_config.NumberColumn(format="%.0f"),
-                        "roas": st.column_config.NumberColumn(format="%.2f"),
-                        "SaleRO (Day)": st.column_config.NumberColumn(format="%.2f"),
-                        "AdsRO (Day)": st.column_config.NumberColumn(format="%.2f"),
+                    # Define formatters
+                    formatters = {
+                        'budget': '{:,.0f}',
+                        'sales': '{:,.0f}',
+                        'orders': '{:,.0f}',
+                        'roas': '{:.2f}',
+                        'SaleRO (Day)': '{:.2f}',
+                        'AdsRO (Day)': '{:.2f}',
+                        'GMV_Q': '{:.1f}',
+                        'GMV_U': '{:.0f}',
+                        'AUTO_Q': '{:.1f}',
+                        'AUTO_U': '{:.0f}',
                     }
-                    
-                    # Replace None/NaN with empty strings for display purposes
-                    df_for_display = display_df.astype(object).replace({np.nan: ''})
 
+                    # Display using st.dataframe with .style for better NaN handling
                     st.dataframe(
-                        df_for_display,
+                        display_df.style.format(formatters, na_rep=''),
+                        use_container_width=True,
                         height=height,
-                        column_config=column_config,
-                        hide_index=True,
                     )
 
     elif page == "Channel":
@@ -775,13 +768,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
-### สรุปการเปลี่ยนแปลง:
-
-ผมได้เพิ่มโค้ดบรรทัดนี้เข้าไป **ก่อน** ที่จะแสดงผล `st.dataframe`:
-
-```python
-# Replace None/NaN with empty strings for display purposes
-df_for_display = display_df.astype(object).replace({np.nan: ''})
 
