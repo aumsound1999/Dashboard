@@ -563,7 +563,15 @@ def main():
                     is_first_row_for_channel = True
                     
                     details_string = campaign_data_df[campaign_data_df['channel'] == channel_name]['campaign_data_string'].iloc[0]
-                    parsed_campaigns = parse_campaign_details(details_string)
+                    
+                    # Parse the full dictionary to get settings and campaigns
+                    try:
+                        data_dict = ast.literal_eval(details_string)
+                        setting_info = data_dict.get('setting', {})
+                        parsed_campaigns = data_dict.get('campaigns', [])
+                    except (ValueError, SyntaxError):
+                        setting_info = {}
+                        parsed_campaigns = []
                     
                     if not parsed_campaigns:
                         # แสดงแถวสำหรับร้านที่ไม่มีแคมเปญ
@@ -571,6 +579,11 @@ def main():
                             'No.': channel_count,
                             'channel': channel_name,
                             'id': '-',
+                            'type': setting_info.get('type', '-'),
+                            'GMV_Q': setting_info.get('gmv_quota', '-'),
+                            'GMV_U': setting_info.get('gmv_user', '-'),
+                            'AUTO_Q': setting_info.get('auto_quota', '-'),
+                            'AUTO_U': setting_info.get('auto_user', '-'),
                             'budget': '-',
                             'sales': '-',
                             'orders': '-',
@@ -589,6 +602,11 @@ def main():
                                 'No.': channel_count if is_first_row_for_channel else '',
                                 'channel': channel_name,
                                 'id': campaign.get('id', '-'),
+                                'type': setting_info.get('type', '-') if is_first_row_for_channel else '',
+                                'GMV_Q': setting_info.get('gmv_quota', '-') if is_first_row_for_channel else '',
+                                'GMV_U': setting_info.get('gmv_user', '-') if is_first_row_for_channel else '',
+                                'AUTO_Q': setting_info.get('auto_quota', '-') if is_first_row_for_channel else '',
+                                'AUTO_U': setting_info.get('auto_user', '-') if is_first_row_for_channel else '',
                                 'budget': f"{budget_val:,.0f}" if isinstance(budget_val, (int, float)) else '-',
                                 'sales': f"{sales_val:,.0f}" if isinstance(sales_val, (int, float)) else '-',
                                 'orders': f"{orders_val:,.0f}" if isinstance(orders_val, (int, float)) else '-',
@@ -601,6 +619,9 @@ def main():
                     st.info("ไม่พบข้อมูลแคมเปญที่สามารถจัดรูปแบบได้")
                 else:
                     display_df = pd.DataFrame(all_rows_to_display)
+                    # Reorder columns
+                    cols_order = ['No.', 'channel', 'id', 'type', 'GMV_Q', 'GMV_U', 'AUTO_Q', 'AUTO_U', 'budget', 'sales', 'orders', 'roas']
+                    display_df = display_df[cols_order]
                     # ตั้งค่า No. เป็น index เพื่อแสดงผล
                     final_df = display_df.set_index('No.')
                     st.table(final_df)
