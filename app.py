@@ -1,7 +1,7 @@
 # app.py
 # Shopee ROAS Dashboard — Overview • Channel • Compare
 # อ่านข้อมูลจาก Google Sheet (CSV export) ผ่าน Secrets:
-#    ROAS_CSV_URL="https://docs.google.com/spreadsheets/d/<ID>/gviz/tqx=out:csv&sheet=<SHEET>"
+#    ROAS_CSV_URL="https://docs.google.com/spreadsheets/d/<ID>/gviz/tqx=out=csv&sheet=<SHEET>"
 #
 # pip: streamlit pandas numpy plotly requests
 
@@ -553,38 +553,57 @@ def main():
                 st.table(campaign_data_df)
             
             elif view_mode == "แสดงรายละเอียด (Formatted)":
-                all_campaigns_details = []
-                # Limit processing to first 100 rows for performance
-                df_to_process = campaign_data_df.head(100) 
+                all_rows_to_display = []
+                channel_count = 0
                 
-                for _, row in df_to_process.iterrows():
-                    channel_name = row['channel']
-                    details_string = row['campaign_data_string']
+                unique_channels = campaign_data_df['channel'].unique()
+
+                for channel_name in unique_channels:
+                    channel_count += 1
+                    is_first_row_for_channel = True
                     
+                    details_string = campaign_data_df[campaign_data_df['channel'] == channel_name]['campaign_data_string'].iloc[0]
                     parsed_campaigns = parse_campaign_details(details_string)
                     
-                    if parsed_campaigns:
+                    if not parsed_campaigns:
+                        # แสดงแถวสำหรับร้านที่ไม่มีแคมเปญ
+                        row_data = {
+                            'No.': channel_count,
+                            'channel': channel_name,
+                            'id': '-',
+                            'budget': '-',
+                            'sales': '-',
+                            'orders': '-',
+                            'roas': '-'
+                        }
+                        all_rows_to_display.append(row_data)
+                    else:
+                        # แสดงแถวสำหรับร้านที่มีแคมเปญ
                         for campaign in parsed_campaigns:
-                            # Add missing keys with default value None
-                            campaign.setdefault('sales', None)
-                            campaign.setdefault('orders', None)
-                            campaign.setdefault('roas', None)
-                            campaign.setdefault('budget', None)
-                            campaign.setdefault('id', None)
-                            campaign['channel'] = channel_name
-                            all_campaigns_details.append(campaign)
+                            budget_val = campaign.get('budget')
+                            sales_val = campaign.get('sales')
+                            orders_val = campaign.get('orders')
+                            roas_val = campaign.get('roas')
+                            
+                            row_data = {
+                                'No.': channel_count if is_first_row_for_channel else '',
+                                'channel': channel_name,
+                                'id': campaign.get('id', '-'),
+                                'budget': f"{budget_val:,.0f}" if isinstance(budget_val, (int, float)) else '-',
+                                'sales': f"{sales_val:,.0f}" if isinstance(sales_val, (int, float)) else '-',
+                                'orders': f"{orders_val:,.0f}" if isinstance(orders_val, (int, float)) else '-',
+                                'roas': f"{roas_val:,.2f}" if isinstance(roas_val, (int, float)) else '-'
+                            }
+                            all_rows_to_display.append(row_data)
+                            is_first_row_for_channel = False
                 
-                if not all_campaigns_details:
-                    st.info("ไม่พบข้อมูลแคมเปญที่สามารถจัดรูปแบบได้ (อาจเป็นเพราะข้อมูลมีรูปแบบไม่ถูกต้อง)")
-                    st.write("แสดงข้อมูลดิบแทน:")
-                    st.table(campaign_data_df) # Fallback to raw data
+                if not all_rows_to_display:
+                    st.info("ไม่พบข้อมูลแคมเปญที่สามารถจัดรูปแบบได้")
                 else:
-                    display_df = pd.DataFrame(all_campaigns_details)
-                    # Define desired column order
-                    cols_order = ['channel', 'id', 'budget', 'sales', 'orders', 'roas']
-                    # Filter and reorder columns that exist in the dataframe
-                    display_df = display_df[[col for col in cols_order if col in display_df.columns]]
-                    st.table(display_df)
+                    display_df = pd.DataFrame(all_rows_to_display)
+                    # ตั้งค่า No. เป็น index เพื่อแสดงผล
+                    final_df = display_df.set_index('No.')
+                    st.table(final_df)
 
 
     elif page == "Channel":
