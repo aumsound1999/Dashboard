@@ -583,16 +583,16 @@ def main():
                     if not parsed_campaigns:
                         row_data = {
                             'channel': channel_name,
-                            'type': setting_info.get('type'),
-                            'GMV_Q': setting_info.get('gmv_quota'),
-                            'GMV_U': setting_info.get('gmv_user'),
-                            'AUTO_Q': setting_info.get('auto_quota'),
-                            'AUTO_U': setting_info.get('auto_user'),
-                            'id': None,
-                            'budget': None,
-                            'sales': None,
-                            'orders': None,
-                            'roas': None,
+                            'type': setting_info.get('type', ''),
+                            'GMV_Q': setting_info.get('gmv_quota', np.nan),
+                            'GMV_U': setting_info.get('gmv_user', np.nan),
+                            'AUTO_Q': setting_info.get('auto_quota', np.nan),
+                            'AUTO_U': setting_info.get('auto_user', np.nan),
+                            'id': '',
+                            'budget': np.nan,
+                            'sales': np.nan,
+                            'orders': np.nan,
+                            'roas': np.nan,
                             'SaleRO (Day)': sale_ro_day_val,
                             'AdsRO (Day)': ads_ro_day_val,
                         }
@@ -602,17 +602,17 @@ def main():
                             row_data = {
                                 'channel': channel_name,
                                 'type': setting_info.get('type') if is_first_row_for_channel else '',
-                                'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else '',
-                                'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else '',
-                                'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else '',
-                                'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else '',
-                                'id': campaign.get('id'),
+                                'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else np.nan,
+                                'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else np.nan,
+                                'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else np.nan,
+                                'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else np.nan,
+                                'id': campaign.get('id', ''),
                                 'budget': campaign.get('budget'),
                                 'sales': campaign.get('sales'),
                                 'orders': campaign.get('orders'),
                                 'roas': campaign.get('roas'),
-                                'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else '',
-                                'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else '',
+                                'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
+                                'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
                             }
                             all_rows_to_display.append(row_data)
                             is_first_row_for_channel = False
@@ -627,7 +627,7 @@ def main():
                     # Calculate height for dataframe to avoid scrollbar
                     height = (len(display_df) + 1) * 35 + 3
 
-                    # Define formatters
+                    # Define formatters for styling
                     formatters = {
                         'budget': '{:,.0f}',
                         'sales': '{:,.0f}',
@@ -641,11 +641,10 @@ def main():
                         'AUTO_U': '{:.0f}',
                     }
 
-                    # Display using st.dataframe with .style for better NaN handling
                     st.dataframe(
                         display_df.style.format(formatters, na_rep=''),
                         use_container_width=True,
-                        height=height,
+                        height=height
                     )
 
     elif page == "Channel":
