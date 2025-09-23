@@ -588,8 +588,11 @@ def main():
                             'GMV_U': setting_info.get('gmv_user'),
                             'AUTO_Q': setting_info.get('auto_quota'),
                             'AUTO_U': setting_info.get('auto_user'),
-                            'id': None, 'budget': None, 'sales': None,
-                            'orders': None, 'roas': None,
+                            'id': np.nan,
+                            'budget': np.nan,
+                            'sales': np.nan,
+                            'orders': np.nan,
+                            'roas': np.nan,
                             'SaleRO (Day)': sale_ro_day_val,
                             'AdsRO (Day)': ads_ro_day_val,
                         }
@@ -599,17 +602,17 @@ def main():
                             row_data = {
                                 'channel': channel_name,
                                 'type': setting_info.get('type') if is_first_row_for_channel else '',
-                                'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else None,
-                                'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else None,
-                                'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else None,
-                                'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else None,
+                                'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else np.nan,
+                                'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else np.nan,
+                                'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else np.nan,
+                                'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else np.nan,
                                 'id': campaign.get('id'),
                                 'budget': campaign.get('budget'),
                                 'sales': campaign.get('sales'),
                                 'orders': campaign.get('orders'),
                                 'roas': campaign.get('roas'),
-                                'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else None,
-                                'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else None,
+                                'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
+                                'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
                             }
                             all_rows_to_display.append(row_data)
                             is_first_row_for_channel = False
@@ -622,7 +625,7 @@ def main():
                     display_df.insert(0, 'No.', range(1, len(display_df) + 1))
                     
                     # Calculate height for dataframe to avoid scrollbar
-                    height = (len(display_df) + 1) * 35 
+                    height = (len(display_df) + 1) * 35 + 3
 
                     # Configure columns for width and formatting
                     column_config={
