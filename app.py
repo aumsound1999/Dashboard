@@ -578,6 +578,7 @@ def main():
                         row_data = {
                             'No.': channel_count,
                             'channel': channel_name,
+                            'id': '-',
                             'type': setting_info.get('type', '-'),
                             'GMV_Q': setting_info.get('gmv_quota', '-'),
                             'GMV_U': setting_info.get('gmv_user', '-'),
@@ -600,6 +601,7 @@ def main():
                             row_data = {
                                 'No.': channel_count if is_first_row_for_channel else '',
                                 'channel': channel_name,
+                                'id': campaign.get('id', '-'),
                                 'type': setting_info.get('type', '-') if is_first_row_for_channel else '',
                                 'GMV_Q': setting_info.get('gmv_quota', '-') if is_first_row_for_channel else '',
                                 'GMV_U': setting_info.get('gmv_user', '-') if is_first_row_for_channel else '',
@@ -617,8 +619,8 @@ def main():
                     st.info("ไม่พบข้อมูลแคมเปญที่สามารถจัดรูปแบบได้")
                 else:
                     display_df = pd.DataFrame(all_rows_to_display)
-                    # Reorder columns according to the image
-                    cols_order = ['No.', 'channel', 'type', 'GMV_Q', 'GMV_U', 'AUTO_Q', 'AUTO_U', 'budget', 'sales', 'orders', 'roas']
+                    # Reorder columns
+                    cols_order = ['No.', 'channel', 'id', 'type', 'GMV_Q', 'GMV_U', 'AUTO_Q', 'AUTO_U', 'budget', 'sales', 'orders', 'roas']
                     display_df = display_df[cols_order]
                     # ตั้งค่า No. เป็น index เพื่อแสดงผล
                     final_df = display_df.set_index('No.')
