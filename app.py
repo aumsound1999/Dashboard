@@ -138,36 +138,25 @@ def parse_metrics_cell(s: str):
 
 def parse_campaign_details(campaign_string: str):
     """
-    CRITICAL FIX 3: Re-written with a more robust logic based on data structure.
-    A real campaign with performance data is a list with more than 6 elements.
-    This correctly filters out status-only indicators like ['gmvus2.0'].
+    [CORRECTED] อัปเกรดฟังก์ชันให้สามารถอ่านข้อมูลแคมเปญในรูปแบบ Dictionary (JSON) ใหม่ได้
     """
     if not isinstance(campaign_string, str):
         return []
 
     try:
-        campaign_list = ast.literal_eval(campaign_string)
-        parsed_data = []
+        # ast.literal_eval สามารถแปลง String ที่หน้าตาเหมือน Dictionary ของ Python ได้
+        data_dict = ast.literal_eval(campaign_string)
         
-        for item in campaign_list:
-            # A real campaign is a list with detailed metrics (len > 6)
-            if isinstance(item, list) and len(item) > 6:
-                try:
-                    # Safely extract metrics
-                    details = {
-                        "id": item[0],
-                        "budget": item[1],
-                        "orders": item[3],
-                        "sales": item[5],
-                        "roas": item[6],
-                    }
-                    parsed_data.append(details)
-                except (IndexError, TypeError):
-                    # Skip malformed inner lists that initially looked correct
-                    continue
-        return parsed_data
+        # ตรวจสอบว่าเป็น Dictionary และมี key 'campaigns' อยู่ข้างในหรือไม่
+        if isinstance(data_dict, dict) and 'campaigns' in data_dict:
+            # ดึง list ของ campaign ออกมา ซึ่งอาจจะเป็น list ว่างก็ได้
+            return data_dict.get('campaigns', [])
+        else:
+            # ถ้าโครงสร้างไม่ถูกต้อง ให้คืนค่าเป็น list ว่าง
+            return []
+            
     except (ValueError, SyntaxError):
-        # Handle cases where the string is not a valid Python literal
+        # จัดการกรณีที่ String ไม่ใช่รูปแบบที่ถูกต้อง
         return []
 
 # -----------------------------------------------------------------------------
@@ -576,6 +565,12 @@ def main():
                     
                     if parsed_campaigns:
                         for campaign in parsed_campaigns:
+                            # Add missing keys with default value None
+                            campaign.setdefault('sales', None)
+                            campaign.setdefault('orders', None)
+                            campaign.setdefault('roas', None)
+                            campaign.setdefault('budget', None)
+                            campaign.setdefault('id', None)
                             campaign['channel'] = channel_name
                             all_campaigns_details.append(campaign)
                 
