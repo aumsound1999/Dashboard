@@ -577,8 +577,8 @@ def main():
                     
                     # Get daily ROAS stats for the current channel
                     channel_stats = latest_daily_stats[latest_daily_stats['channel'] == channel_name]
-                    sale_ro_day_val = channel_stats['sale_ro_day'].iloc[0] if not channel_stats.empty else None
-                    ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else None
+                    sale_ro_day_val = channel_stats['sale_ro_day'].iloc[0] if not channel_stats.empty else np.nan
+                    ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else np.nan
 
                     if not parsed_campaigns:
                         row_data = {
@@ -588,11 +588,11 @@ def main():
                             'GMV_U': setting_info.get('gmv_user'),
                             'AUTO_Q': setting_info.get('auto_quota'),
                             'AUTO_U': setting_info.get('auto_user'),
-                            'id': np.nan,
-                            'budget': np.nan,
-                            'sales': np.nan,
-                            'orders': np.nan,
-                            'roas': np.nan,
+                            'id': None,
+                            'budget': None,
+                            'sales': None,
+                            'orders': None,
+                            'roas': None,
                             'SaleRO (Day)': sale_ro_day_val,
                             'AdsRO (Day)': ads_ro_day_val,
                         }
@@ -602,17 +602,17 @@ def main():
                             row_data = {
                                 'channel': channel_name,
                                 'type': setting_info.get('type') if is_first_row_for_channel else '',
-                                'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else np.nan,
-                                'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else np.nan,
-                                'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else np.nan,
-                                'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else np.nan,
+                                'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else '',
+                                'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else '',
+                                'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else '',
+                                'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else '',
                                 'id': campaign.get('id'),
                                 'budget': campaign.get('budget'),
                                 'sales': campaign.get('sales'),
                                 'orders': campaign.get('orders'),
                                 'roas': campaign.get('roas'),
-                                'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
-                                'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
+                                'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else '',
+                                'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else '',
                             }
                             all_rows_to_display.append(row_data)
                             is_first_row_for_channel = False
@@ -644,9 +644,12 @@ def main():
                         "SaleRO (Day)": st.column_config.NumberColumn(format="%.2f"),
                         "AdsRO (Day)": st.column_config.NumberColumn(format="%.2f"),
                     }
+                    
+                    # Replace None/NaN with empty strings for display purposes
+                    df_for_display = display_df.astype(object).replace({np.nan: ''})
 
                     st.dataframe(
-                        display_df,
+                        df_for_display,
                         height=height,
                         column_config=column_config,
                         hide_index=True,
@@ -772,4 +775,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+
+### สรุปการเปลี่ยนแปลง:
+
+ผมได้เพิ่มโค้ดบรรทัดนี้เข้าไป **ก่อน** ที่จะแสดงผล `st.dataframe`:
+
+```python
+# Replace None/NaN with empty strings for display purposes
+df_for_display = display_df.astype(object).replace({np.nan: ''})
 
