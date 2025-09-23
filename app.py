@@ -532,8 +532,7 @@ def main():
                             st.markdown(f"สถานะแอด: **เปิดใช้งาน**")
                             st.markdown("---")
         
-        # --- MODIFIED: Campaign Details Display Section ---
-        # ปรับปรุงการแสดงผลข้อมูลแคมเปญ ให้ผู้ใช้สามารถเลือกมุมมองได้
+        # --- MODIFIED: Campaign Data Display Section ---
         st.markdown("### Campaign Data")
         
         view_mode = st.radio(
@@ -543,34 +542,42 @@ def main():
             label_visibility="collapsed"
         )
 
-        if wide.shape[1] < 2 or wide.empty:
-            st.warning("ข้อมูลต้นทางมีน้อยกว่า 2 คอลัมน์ หรือไม่มีข้อมูล")
+        # ใช้ข้อมูล `wide` ซึ่งเป็นข้อมูลดิบก่อนการแปลง
+        if 'campaign' not in wide.columns:
+             st.warning("ไม่พบคอลัมน์ 'campaign' ในข้อมูลดิบ")
         else:
-            # เราจะใช้ 2 คอลัมน์แรกซึ่งปกติคือ 'channel' และข้อมูลรายละเอียดแคมเปญ
-            raw_campaign_df = wide.iloc[:, :2].copy()
-            # พยายามตั้งชื่อคอลัมน์ให้สื่อความหมายมากขึ้น
-            raw_campaign_df.columns = ['channel', 'campaign_data_string']
+            # สร้าง DataFrame สำหรับแสดงผลจากคอลัมน์ที่ต้องการ
+            # สมมติว่าคอลัมน์แรกคือ 'channel' และคอลัมน์ที่สองคือ 'campaign'
+            # ต้องปรับแก้ตามชื่อคอลัมน์จริงในไฟล์ CSV ของพี่
+            try:
+                first_col_name = wide.columns[0]
+                campaign_data_df = wide[[first_col_name, 'campaign']].copy()
+                campaign_data_df.columns = ['channel', 'campaign_data_string'] # ตั้งชื่อใหม่ให้ชัดเจน
+            except (KeyError, IndexError):
+                st.error("ไม่สามารถหาคอลัมน์ 'channel' และ 'campaign' ที่ต้องการได้ กรุณาตรวจสอบไฟล์ CSV")
+                st.stop()
+
 
             if view_mode == "แสดงข้อมูลดิบ (Raw)":
-                st.table(raw_campaign_df)
+                st.table(campaign_data_df)
             
             elif view_mode == "แสดงรายละเอียด (Formatted)":
-                all_campaigns = []
-                for _, row in raw_campaign_df.iterrows():
+                all_campaigns_details = []
+                for _, row in campaign_data_df.iterrows():
                     channel_name = row['channel']
                     details_string = row['campaign_data_string']
                     
                     parsed_campaigns = parse_campaign_details(details_string)
                     
-                    for campaign in parsed_campaigns:
-                        campaign['channel'] = channel_name
-                        all_campaigns.append(campaign)
+                    if parsed_campaigns:
+                        for campaign in parsed_campaigns:
+                            campaign['channel'] = channel_name
+                            all_campaigns_details.append(campaign)
                 
-                if not all_campaigns:
-                    st.info("ไม่สามารถแยกข้อมูลแคมเปญอย่างละเอียดได้ จะแสดงข้อมูลดิบแทน")
-                    st.table(raw_campaign_df) # Fallback to raw data
+                if not all_campaigns_details:
+                    st.info("ไม่พบข้อมูลแคมเปญที่สามารถจัดรูปแบบได้ใน Snapshot ล่าสุด")
                 else:
-                    display_df = pd.DataFrame(all_campaigns)
+                    display_df = pd.DataFrame(all_campaigns_details)
                     cols_order = ['channel', 'id', 'budget', 'sales', 'orders', 'roas']
                     display_df = display_df[[col for col in cols_order if col in display_df.columns]]
                     st.table(display_df)
