@@ -550,11 +550,19 @@ def main():
             campaign_data_df.columns = ['channel', 'campaign_data_string']
 
             if view_mode == "แสดงข้อมูลดิบ (Raw)":
-                st.table(campaign_data_df)
+                st.table(campaign_data_df[campaign_data_df['channel'].isin(selected_channels)])
             
             elif view_mode == "แสดงรายละเอียด (Formatted)":
+                # Filter data based on selected channels BEFORE processing
+                df_long_filtered_for_rank = df_long[df_long['channel'].isin(selected_channels)]
+                campaign_data_df_filtered = campaign_data_df[campaign_data_df['channel'].isin(selected_channels)]
+                
+                if df_long_filtered_for_rank.empty:
+                    st.info("ไม่พบข้อมูลสำหรับร้านค้าที่เลือก")
+                    st.stop()
+                    
                 # Prepare latest daily stats for merging
-                latest_daily_stats = df_long.loc[df_long.groupby('channel')['timestamp'].idxmax()].copy()
+                latest_daily_stats = df_long_filtered_for_rank.loc[df_long_filtered_for_rank.groupby('channel')['timestamp'].idxmax()].copy()
                 latest_daily_stats['sale_ro_day'] = latest_daily_stats['sales'] / latest_daily_stats['ads'].replace(0, np.nan)
                 latest_daily_stats.rename(columns={'ads_ro_raw': 'ads_ro_day'}, inplace=True)
                 
@@ -566,8 +574,8 @@ def main():
                 rank_dict = pd.Series(ranking_data.rank_sale.values, index=ranking_data.channel).to_dict()
 
                 # --- NEW: Calculate Yesterday's Ranks & Growth Rank ---
-                yesterday_ts = df_long['timestamp'].max() - pd.Timedelta(days=1)
-                yesterday_stats = pick_snapshot_at(df_long, yesterday_ts, tz=tz)
+                yesterday_ts = df_long_filtered_for_rank['timestamp'].max() - pd.Timedelta(days=1)
+                yesterday_stats = pick_snapshot_at(df_long_filtered_for_rank, yesterday_ts, tz=tz)
                 
                 # Merge today's and yesterday's sales data
                 comparison_df = ranking_data[['channel', 'sale_day']].copy()
@@ -587,14 +595,14 @@ def main():
                 all_rows_to_display = []
                 
                 # --- Iterate in ORIGINAL order ---
-                unique_channels = campaign_data_df['channel'].unique()
+                unique_channels = campaign_data_df_filtered['channel'].unique()
                 
                 channel_num = 0
                 for channel_name in unique_channels:
                     channel_num += 1
                     is_first_row_for_channel = True
                     
-                    details_string = campaign_data_df[campaign_data_df['channel'] == channel_name]['campaign_data_string'].iloc[0]
+                    details_string = campaign_data_df_filtered[campaign_data_df_filtered['channel'] == channel_name]['campaign_data_string'].iloc[0]
                     
                     try:
                         data_dict = ast.literal_eval(details_string)
