@@ -558,20 +558,19 @@ def main():
                 latest_daily_stats['sale_ro_day'] = latest_daily_stats['sales'] / latest_daily_stats['ads'].replace(0, np.nan)
                 latest_daily_stats.rename(columns={'ads_ro_raw': 'ads_ro_day'}, inplace=True)
                 
-                # --- NEW: Calculate Ranks ---
+                # --- Calculate Ranks ---
                 ranking_data = latest_daily_stats[['channel', 'sales']].copy()
                 ranking_data.rename(columns={'sales': 'sale_day'}, inplace=True)
-                # Fill NaN with 0 for ranking purposes, so inactive channels get the last rank
                 ranking_data['sale_day'].fillna(0, inplace=True)
                 ranking_data['Rank'] = ranking_data['sale_day'].rank(method='dense', ascending=False).astype(int)
                 rank_dict = pd.Series(ranking_data.Rank.values, index=ranking_data.channel).to_dict()
 
                 all_rows_to_display = []
                 
-                # Sort channels by rank before displaying
-                sorted_channels = ranking_data.sort_values('Rank')['channel'].unique()
+                # --- Iterate in ORIGINAL order ---
+                unique_channels = campaign_data_df['channel'].unique()
 
-                for channel_name in sorted_channels:
+                for channel_name in unique_channels:
                     is_first_row_for_channel = True
                     
                     details_string = campaign_data_df[campaign_data_df['channel'] == channel_name]['campaign_data_string'].iloc[0]
@@ -584,7 +583,7 @@ def main():
                         setting_info = {}
                         parsed_campaigns = []
                     
-                    # Get daily ROAS stats for the current channel
+                    # Get daily stats for the current channel
                     channel_stats = latest_daily_stats[latest_daily_stats['channel'] == channel_name]
                     sale_ro_day_val = channel_stats['sale_ro_day'].iloc[0] if not channel_stats.empty else np.nan
                     ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else np.nan
