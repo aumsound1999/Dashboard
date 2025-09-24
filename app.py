@@ -562,15 +562,17 @@ def main():
                 ranking_data = latest_daily_stats[['channel', 'sales']].copy()
                 ranking_data.rename(columns={'sales': 'sale_day'}, inplace=True)
                 ranking_data['sale_day'].fillna(0, inplace=True)
-                ranking_data['Rank'] = ranking_data['sale_day'].rank(method='dense', ascending=False).astype(int)
-                rank_dict = pd.Series(ranking_data.Rank.values, index=ranking_data.channel).to_dict()
+                ranking_data['rank_sale'] = ranking_data['sale_day'].rank(method='dense', ascending=False).astype(int)
+                rank_dict = pd.Series(ranking_data.rank_sale.values, index=ranking_data.channel).to_dict()
 
                 all_rows_to_display = []
                 
                 # --- Iterate in ORIGINAL order ---
                 unique_channels = campaign_data_df['channel'].unique()
-
+                
+                channel_num = 0
                 for channel_name in unique_channels:
+                    channel_num += 1
                     is_first_row_for_channel = True
                     
                     details_string = campaign_data_df[campaign_data_df['channel'] == channel_name]['campaign_data_string'].iloc[0]
@@ -595,7 +597,7 @@ def main():
 
                     if not parsed_campaigns:
                         row_data = {
-                            'Rank': str(channel_rank),
+                            'No.': str(channel_num),
                             'channel': channel_name,
                             'type': setting_info.get('type', ''),
                             'GMV_Q': setting_info.get('gmv_quota'),
@@ -611,12 +613,13 @@ def main():
                             'AdsRO (Day)': ads_ro_day_val,
                             'sale_day': sale_day_val,
                             'saleads_day': saleads_day_val,
+                            'rank_sale': str(channel_rank),
                         }
                         all_rows_to_display.append(row_data)
                     else:
                         for campaign in parsed_campaigns:
                             row_data = {
-                                'Rank': str(channel_rank) if is_first_row_for_channel else '',
+                                'No.': str(channel_num) if is_first_row_for_channel else '',
                                 'channel': channel_name if is_first_row_for_channel else '',
                                 'type': setting_info.get('type') if is_first_row_for_channel else '',
                                 'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else np.nan,
@@ -632,6 +635,7 @@ def main():
                                 'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
                                 'sale_day': sale_day_val if is_first_row_for_channel else np.nan,
                                 'saleads_day': saleads_day_val if is_first_row_for_channel else np.nan,
+                                'rank_sale': str(channel_rank) if is_first_row_for_channel else '',
                             }
                             all_rows_to_display.append(row_data)
                             is_first_row_for_channel = False
