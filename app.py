@@ -661,6 +661,10 @@ def main():
                     channel_rank = rank_dict.get(channel_name, '')
                     channel_last_rank = rank_last_dict.get(channel_name, '')
 
+                    # Get yesterday's sales for the new column
+                    last_sale_day_val = comparison_df[comparison_df['channel'] == channel_name]['last_sale_day'].iloc[0] if channel_name in comparison_df['channel'].values else np.nan
+
+
                     if not parsed_campaigns:
                         row_data = {
                             'No.': str(channel_num),
@@ -679,6 +683,7 @@ def main():
                             'AdsRO (Day)': ads_ro_day_val,
                             'sale_day': sale_day_val,
                             'saleads_day': saleads_day_val,
+                            'salelast_day': last_sale_day_val,
                             'rank_sale': str(channel_rank),
                             'rank_last_sale': str(channel_last_rank),
                         }
@@ -702,6 +707,7 @@ def main():
                                 'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
                                 'sale_day': sale_day_val if is_first_row_for_channel else np.nan,
                                 'saleads_day': saleads_day_val if is_first_row_for_channel else np.nan,
+                                'salelast_day': last_sale_day_val if is_first_row_for_channel else np.nan,
                                 'rank_sale': str(channel_rank) if is_first_row_for_channel else '',
                                 'rank_last_sale': str(channel_last_rank) if is_first_row_for_channel else '',
                             }
@@ -730,6 +736,7 @@ def main():
                         'AUTO_U': '{:.0f}',
                         'sale_day': '{:,.0f}',
                         'saleads_day': '{:,.0f}',
+                        'salelast_day': '{:,.0f}',
                     }
 
                     st.dataframe(
