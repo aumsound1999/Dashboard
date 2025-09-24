@@ -755,15 +755,16 @@ def main():
                     )
 
     elif page == "Channel":
-        if not all_channels:
-             st.warning("No channels found in the data.")
-             st.stop()
-        ch = st.selectbox("Pick one channel", options=all_channels, index=0)
+        st.header("เจาะลึกรายร้านค้า (Channel Detail)")
+        
+        ch = st.selectbox("เลือกร้านค้าเพื่อเจาะลึก", options=all_channels, key="channel_select")
+        
         ch_df = d_filtered[d_filtered["channel"] == ch].copy()
         
-        st.subheader(f"Channel Details: {ch}")
+        st.subheader(f"สรุปสำหรับร้าน: `{ch}`")
+
         if ch_df.empty:
-            st.warning("No data for this channel in the selected period.")
+            st.warning("ไม่พบข้อมูลสำหรับร้านค้านี้ในช่วงเวลาที่เลือก")
             st.stop()
 
         cur_snap, y_snap, cur_hour = current_and_yesterday_snapshots(ch_df, tz=tz)
@@ -801,6 +802,7 @@ def main():
 
         else:
             piv_ch = build_overlay_by_day(ch_df, metric_ch, tz=tz)
+            piv_for_heatmap_ch = piv_ch
             if piv_ch.empty:
                 st.info("No data to plot.")
             else:
@@ -810,6 +812,19 @@ def main():
                 title_ch = "Cumulative Sales" if metric_ch == "sale_day" else f"Hourly {metric_ch.replace('_', ' ').title()}"
                 fig_ch.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title=title_ch)
                 st.plotly_chart(fig_ch, use_container_width=True)
+                
+        if show_heatmap_ch:
+            st.markdown(f"### Prime Hours Heatmap for {ch}")
+            if piv_for_heatmap_ch is not None and not piv_for_heatmap_ch.empty:
+                fig_hm_ch = px.imshow(
+                    piv_for_heatmap_ch.T,
+                    aspect="auto",
+                    labels=dict(x="Hour", y="Day", color=f"Hourly {metric_ch}"),
+                    color_continuous_scale="Blues",
+                )
+                st.plotly_chart(fig_hm_ch, use_container_width=True)
+            else:
+                st.info("No data for heatmap.")
 
     elif page == "Compare":
         st.subheader("Channel Comparison")
