@@ -565,17 +565,24 @@ def main():
                 ranking_data['rank_sale'] = ranking_data['sale_day'].rank(method='dense', ascending=False).astype(int)
                 rank_dict = pd.Series(ranking_data.rank_sale.values, index=ranking_data.channel).to_dict()
 
-                # --- NEW: Calculate Yesterday's Ranks ---
+                # --- NEW: Calculate Yesterday's Ranks & Growth Rank ---
                 yesterday_ts = df_long['timestamp'].max() - pd.Timedelta(days=1)
                 yesterday_stats = pick_snapshot_at(df_long, yesterday_ts, tz=tz)
+                
+                # Merge today's and yesterday's sales data
+                comparison_df = ranking_data[['channel', 'sale_day']].copy()
                 if not yesterday_stats.empty:
-                    last_ranking_data = yesterday_stats[['channel', 'sales']].copy()
-                    last_ranking_data.rename(columns={'sales': 'last_sale_day'}, inplace=True)
-                    last_ranking_data['last_sale_day'].fillna(0, inplace=True)
-                    last_ranking_data['rank_last_sale'] = last_ranking_data['last_sale_day'].rank(method='dense', ascending=False).astype(int)
-                    rank_last_dict = pd.Series(last_ranking_data.rank_last_sale.values, index=last_ranking_data.channel).to_dict()
+                    last_sales_df = yesterday_stats[['channel', 'sales']].copy()
+                    last_sales_df.rename(columns={'sales': 'last_sale_day'}, inplace=True)
+                    comparison_df = pd.merge(comparison_df, last_sales_df, on='channel', how='left')
                 else:
-                    rank_last_dict = {}
+                    comparison_df['last_sale_day'] = np.nan
+                
+                comparison_df.fillna(0, inplace=True)
+                comparison_df['growth'] = comparison_df['sale_day'] - comparison_df['last_sale_day']
+                comparison_df['rank_last_sale'] = comparison_df['growth'].rank(method='dense', ascending=False).astype(int)
+                rank_last_dict = pd.Series(comparison_df.rank_last_sale.values, index=comparison_df.channel).to_dict()
+
 
                 all_rows_to_display = []
                 
