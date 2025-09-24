@@ -23,6 +23,19 @@ st.set_page_config(page_title="Shopee ROAS", layout="wide")
 METRIC_COLUMNS = ["sales", "orders", "ads", "view", "ads_ro_raw", "misc"]
 V_COLUMNS = [f"v{i}" for i in range(len(METRIC_COLUMNS))]
 
+# --- NEW: Define staff and their channels ---
+STAFF_CHANNELS = {
+    "jen": [
+        "luckyrich_mart", "prosperway_store", "richvibe_market", "starshop_789",
+        "lovely_cattt", "patchalady5555", "monostore_99", "helloo1999", "shopletter"
+    ],
+    "fon": [
+        "siri_lovepink23", "goldenflow_shop", "cherry.good", "infinity_jj",
+        "mocha_winkkk", "shop.sabai_", "sale_mak_mak", "pop_py_mart",
+        "miniyou_01", "bubbu_town777"
+    ]
+}
+
 # -----------------------------------------------------------------------------
 # Helpers: detect & parse
 # -----------------------------------------------------------------------------
@@ -399,13 +412,38 @@ def main():
     end_ts = pd.Timestamp.combine(d2, pd.Timestamp.max.time()).tz_localize(tz)
 
     all_channels = sorted(df_long["channel"].dropna().unique().tolist())
-    chan_options = ["[All]"] + all_channels
+    
+    # --- NEW: Channel Grouping Logic ---
+    jen_channels = [ch for ch in STAFF_CHANNELS["jen"] if ch in all_channels]
+    fon_channels = [ch for ch in STAFF_CHANNELS["fon"] if ch in all_channels]
+    
+    jen_fon_channels = set(jen_channels + fon_channels)
+    mint_channels = [ch for ch in all_channels if ch not in jen_fon_channels]
+
+    # Create options with groups
+    chan_options = ["[All]", "[Jen]", "[Fon]", "[Mint]"] + all_channels
     chosen = st.sidebar.multiselect("Channels", options=chan_options, default=["[All]"])
 
-    if ("[All]" in chosen) or not any(c in all_channels for c in chosen):
+    selected_channels = []
+    if not chosen:
+        selected_channels = []
+    elif "[All]" in chosen:
         selected_channels = all_channels
     else:
-        selected_channels = [c for c in chosen if c in all_channels]
+        temp_channels = set()
+        if "[Jen]" in chosen:
+            temp_channels.update(jen_channels)
+        if "[Fon]" in chosen:
+            temp_channels.update(fon_channels)
+        if "[Mint]" in chosen:
+            temp_channels.update(mint_channels)
+        
+        # Add individual channels that are not part of a selected group
+        for ch in chosen:
+            if ch not in ["[Jen]", "[Fon]", "[Mint]"]:
+                temp_channels.add(ch)
+        selected_channels = sorted(list(temp_channels))
+
 
     page = st.sidebar.radio("Page", ["Overview", "Channel", "Compare"])
     st.title("Shopee ROAS Dashboard")
@@ -421,7 +459,7 @@ def main():
     if page == "Overview":
         st.subheader("Overview (All selected channels)")
         if d_filtered.empty:
-            st.warning("No data in selected period.")
+            st.warning("No data in selected period for the chosen channels.")
             st.stop()
 
         cur_snap, y_snap, cur_hour = current_and_yesterday_snapshots(d_filtered, tz=tz)
@@ -491,7 +529,7 @@ def main():
             index=0
         )
 
-        latest_snapshot_all = df_long.sort_values('timestamp').groupby('channel').tail(1).reset_index()
+        latest_snapshot_all = df_long[df_long['channel'].isin(selected_channels)].sort_values('timestamp').groupby('channel').tail(1).reset_index()
 
         low_credit_channels = latest_snapshot_all[
             (latest_snapshot_all['misc'].notna()) &
