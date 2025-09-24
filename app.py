@@ -558,11 +558,20 @@ def main():
                 latest_daily_stats['sale_ro_day'] = latest_daily_stats['sales'] / latest_daily_stats['ads'].replace(0, np.nan)
                 latest_daily_stats.rename(columns={'ads_ro_raw': 'ads_ro_day'}, inplace=True)
                 
+                # --- NEW: Calculate Ranks ---
+                ranking_data = latest_daily_stats[['channel', 'sales']].copy()
+                ranking_data.rename(columns={'sales': 'sale_day'}, inplace=True)
+                # Fill NaN with 0 for ranking purposes, so inactive channels get the last rank
+                ranking_data['sale_day'].fillna(0, inplace=True)
+                ranking_data['Rank'] = ranking_data['sale_day'].rank(method='dense', ascending=False).astype(int)
+                rank_dict = pd.Series(ranking_data.Rank.values, index=ranking_data.channel).to_dict()
+
                 all_rows_to_display = []
                 
-                unique_channels = campaign_data_df['channel'].unique()
+                # Sort channels by rank before displaying
+                sorted_channels = ranking_data.sort_values('Rank')['channel'].unique()
 
-                for channel_name in unique_channels:
+                for channel_name in sorted_channels:
                     is_first_row_for_channel = True
                     
                     details_string = campaign_data_df[campaign_data_df['channel'] == channel_name]['campaign_data_string'].iloc[0]
@@ -581,21 +590,24 @@ def main():
                     ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else np.nan
                     sale_day_val = channel_stats['sales'].iloc[0] if not channel_stats.empty else np.nan
                     saleads_day_val = channel_stats['view'].iloc[0] if not channel_stats.empty else np.nan
-
+                    
+                    # Get rank from dictionary
+                    channel_rank = rank_dict.get(channel_name, '')
 
                     if not parsed_campaigns:
                         row_data = {
+                            'Rank': str(channel_rank),
                             'channel': channel_name,
-                            'type': setting_info.get('type'),
+                            'type': setting_info.get('type', ''),
                             'GMV_Q': setting_info.get('gmv_quota'),
                             'GMV_U': setting_info.get('gmv_user'),
                             'AUTO_Q': setting_info.get('auto_quota'),
                             'AUTO_U': setting_info.get('auto_user'),
-                            'id': None,
-                            'budget': None,
-                            'sales': None,
-                            'orders': None,
-                            'roas': None,
+                            'id': '',
+                            'budget': np.nan,
+                            'sales': np.nan,
+                            'orders': np.nan,
+                            'roas': np.nan,
                             'SaleRO (Day)': sale_ro_day_val,
                             'AdsRO (Day)': ads_ro_day_val,
                             'sale_day': sale_day_val,
@@ -605,7 +617,8 @@ def main():
                     else:
                         for campaign in parsed_campaigns:
                             row_data = {
-                                'channel': channel_name,
+                                'Rank': str(channel_rank) if is_first_row_for_channel else '',
+                                'channel': channel_name if is_first_row_for_channel else '',
                                 'type': setting_info.get('type') if is_first_row_for_channel else '',
                                 'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else np.nan,
                                 'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else np.nan,
@@ -628,8 +641,6 @@ def main():
                     st.info("ไม่พบข้อมูลแคมเปญที่สามารถจัดรูปแบบได้")
                 else:
                     display_df = pd.DataFrame(all_rows_to_display)
-                    # Add No. column
-                    display_df.insert(0, 'No.', range(1, len(display_df) + 1))
                     
                     # Calculate height for dataframe to avoid scrollbar
                     height = (len(display_df) + 1) * 35 + 3
@@ -653,7 +664,8 @@ def main():
                     st.dataframe(
                         display_df.style.format(formatters, na_rep=''),
                         use_container_width=True,
-                        height=height
+                        height=height,
+                        hide_index=True
                     )
 
     elif page == "Channel":
