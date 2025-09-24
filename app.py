@@ -825,6 +825,118 @@ def main():
                 st.plotly_chart(fig_hm_ch, use_container_width=True)
             else:
                 st.info("No data for heatmap.")
+        
+        # --- NEW: Campaign Data Table for Channel Page ---
+        st.markdown("### Campaign Data")
+        
+        # Filter wide data for the selected channel
+        campaign_data_df_channel = wide[wide.iloc[:, 0] == ch]
+
+        # Reuse the logic from Overview page, but with channel-specific data
+        # Logic to dynamically find the first two columns
+        first_time_col_index = -1
+        for i, col in enumerate(wide.columns):
+            if is_time_col(str(col)):
+                first_time_col_index = i
+                break
+        
+        if first_time_col_index == -1 or first_time_col_index < 2:
+            st.warning("ไม่สามารถระบุคอลัมน์ channel และ campaign จากข้อมูลดิบได้")
+        else:
+            id_cols = wide.columns[:first_time_col_index]
+            channel_col_name = id_cols[0]
+            campaign_col_name = id_cols[1]
+
+            campaign_data_df = wide[[channel_col_name, campaign_col_name]].copy()
+            campaign_data_df.columns = ['channel', 'campaign_data_string']
+            campaign_data_df_filtered = campaign_data_df[campaign_data_df['channel'] == ch]
+
+            df_long_filtered_for_rank = df_long[df_long['channel'] == ch]
+            if not df_long_filtered_for_rank.empty:
+                latest_daily_stats = df_long_filtered_for_rank.loc[df_long_filtered_for_rank.groupby('channel')['timestamp'].idxmax()].copy()
+                latest_daily_stats['sale_ro_day'] = latest_daily_stats['sales'] / latest_daily_stats['ads'].replace(0, np.nan)
+                latest_daily_stats.rename(columns={'ads_ro_raw': 'ads_ro_day'}, inplace=True)
+                
+                all_rows_to_display = []
+                channel_num = 0
+                for channel_name in campaign_data_df_filtered['channel'].unique():
+                    channel_num += 1
+                    # ... (rest of the table generation logic)
+                    is_first_row_for_channel = True
+                    details_string = campaign_data_df_filtered[campaign_data_df_filtered['channel'] == channel_name]['campaign_data_string'].iloc[0]
+                    try:
+                        data_dict = ast.literal_eval(details_string)
+                        setting_info = data_dict.get('setting', {})
+                        parsed_campaigns = data_dict.get('campaigns', [])
+                    except (ValueError, SyntaxError):
+                        setting_info = {}
+                        parsed_campaigns = []
+                    
+                    channel_stats = latest_daily_stats[latest_daily_stats['channel'] == channel_name]
+                    # ... (get all other stats like sale_day_val, etc.)
+                    sale_ro_day_val = channel_stats['sale_ro_day'].iloc[0] if not channel_stats.empty else np.nan
+                    ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else np.nan
+                    sale_day_val = channel_stats['sales'].iloc[0] if not channel_stats.empty else np.nan
+                    saleads_day_val = channel_stats['view'].iloc[0] if not channel_stats.empty else np.nan
+                    
+                    # For the channel page, ranks are not applicable, so we can hide them or show 'N/A'
+                    if not parsed_campaigns:
+                        row_data = {
+                            'No.': str(channel_num),
+                            'channel': channel_name,
+                            'type': setting_info.get('type', ''),
+                            'GMV_Q': setting_info.get('gmv_quota'),
+                            'GMV_U': setting_info.get('gmv_user'),
+                            'AUTO_Q': setting_info.get('auto_quota'),
+                            'AUTO_U': setting_info.get('auto_user'),
+                            'id': '',
+                            'budget': np.nan,
+                            'sales': np.nan,
+                            'orders': np.nan,
+                            'roas': np.nan,
+                            'SaleRO (Day)': sale_ro_day_val,
+                            'AdsRO (Day)': ads_ro_day_val,
+                            'saleads_day': saleads_day_val,
+                            'sale_day': sale_day_val,
+                        }
+                        all_rows_to_display.append(row_data)
+                    else:
+                        for campaign in parsed_campaigns:
+                             row_data = {
+                                'No.': str(channel_num) if is_first_row_for_channel else '',
+                                'channel': channel_name if is_first_row_for_channel else '',
+                                'type': setting_info.get('type') if is_first_row_for_channel else '',
+                                'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else np.nan,
+                                'GMV_U': setting_info.get('gmv_user') if is_first_row_for_channel else np.nan,
+                                'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else np.nan,
+                                'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else np.nan,
+                                'id': campaign.get('id'),
+                                'budget': campaign.get('budget'),
+                                'sales': campaign.get('sales'),
+                                'orders': campaign.get('orders'),
+                                'roas': campaign.get('roas'),
+                                'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
+                                'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
+                                'saleads_day': saleads_day_val if is_first_row_for_channel else np.nan,
+                                'sale_day': sale_day_val if is_first_row_for_channel else np.nan,
+                            }
+                             all_rows_to_display.append(row_data)
+                             is_first_row_for_channel = False
+
+                if all_rows_to_display:
+                    display_df = pd.DataFrame(all_rows_to_display)
+                    height = (len(display_df) + 1) * 35 + 3
+                    formatters = {
+                        'budget': '{:,.0f}','sales': '{:,.0f}','orders': '{:,.0f}','roas': '{:.2f}',
+                        'SaleRO (Day)': '{:.2f}','AdsRO (Day)': '{:.2f}','GMV_Q': '{:.1f}',
+                        'GMV_U': '{:.0f}','AUTO_Q': '{:.1f}','AUTO_U': '{:.0f}',
+                        'sale_day': '{:,.0f}','saleads_day': '{:,.0f}',
+                    }
+                    st.dataframe(
+                        display_df.style.format(formatters, na_rep=''),
+                        use_container_width=True, height=height, hide_index=True
+                    )
+
 
     elif page == "Compare":
         st.subheader("Channel Comparison")
