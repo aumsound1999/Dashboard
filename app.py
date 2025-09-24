@@ -558,12 +558,24 @@ def main():
                 latest_daily_stats['sale_ro_day'] = latest_daily_stats['sales'] / latest_daily_stats['ads'].replace(0, np.nan)
                 latest_daily_stats.rename(columns={'ads_ro_raw': 'ads_ro_day'}, inplace=True)
                 
-                # --- Calculate Ranks ---
+                # --- Calculate Today's Ranks ---
                 ranking_data = latest_daily_stats[['channel', 'sales']].copy()
                 ranking_data.rename(columns={'sales': 'sale_day'}, inplace=True)
                 ranking_data['sale_day'].fillna(0, inplace=True)
                 ranking_data['rank_sale'] = ranking_data['sale_day'].rank(method='dense', ascending=False).astype(int)
                 rank_dict = pd.Series(ranking_data.rank_sale.values, index=ranking_data.channel).to_dict()
+
+                # --- NEW: Calculate Yesterday's Ranks ---
+                yesterday_ts = df_long['timestamp'].max() - pd.Timedelta(days=1)
+                yesterday_stats = pick_snapshot_at(df_long, yesterday_ts, tz=tz)
+                if not yesterday_stats.empty:
+                    last_ranking_data = yesterday_stats[['channel', 'sales']].copy()
+                    last_ranking_data.rename(columns={'sales': 'last_sale_day'}, inplace=True)
+                    last_ranking_data['last_sale_day'].fillna(0, inplace=True)
+                    last_ranking_data['rank_last_sale'] = last_ranking_data['last_sale_day'].rank(method='dense', ascending=False).astype(int)
+                    rank_last_dict = pd.Series(last_ranking_data.rank_last_sale.values, index=last_ranking_data.channel).to_dict()
+                else:
+                    rank_last_dict = {}
 
                 all_rows_to_display = []
                 
@@ -592,13 +604,13 @@ def main():
                     sale_day_val = channel_stats['sales'].iloc[0] if not channel_stats.empty else np.nan
                     saleads_day_val = channel_stats['view'].iloc[0] if not channel_stats.empty else np.nan
                     
-                    # Get rank from dictionary
+                    # Get ranks from dictionaries
                     channel_rank = rank_dict.get(channel_name, '')
+                    channel_last_rank = rank_last_dict.get(channel_name, '')
 
                     if not parsed_campaigns:
                         row_data = {
                             'No.': str(channel_num),
-                            'rank_sale': str(channel_rank),
                             'channel': channel_name,
                             'type': setting_info.get('type', ''),
                             'GMV_Q': setting_info.get('gmv_quota'),
@@ -614,13 +626,14 @@ def main():
                             'AdsRO (Day)': ads_ro_day_val,
                             'sale_day': sale_day_val,
                             'saleads_day': saleads_day_val,
+                            'rank_sale': str(channel_rank),
+                            'rank_last_sale': str(channel_last_rank),
                         }
                         all_rows_to_display.append(row_data)
                     else:
                         for campaign in parsed_campaigns:
                             row_data = {
                                 'No.': str(channel_num) if is_first_row_for_channel else '',
-                                'rank_sale': str(channel_rank) if is_first_row_for_channel else '',
                                 'channel': channel_name if is_first_row_for_channel else '',
                                 'type': setting_info.get('type') if is_first_row_for_channel else '',
                                 'GMV_Q': setting_info.get('gmv_quota') if is_first_row_for_channel else np.nan,
@@ -636,6 +649,8 @@ def main():
                                 'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
                                 'sale_day': sale_day_val if is_first_row_for_channel else np.nan,
                                 'saleads_day': saleads_day_val if is_first_row_for_channel else np.nan,
+                                'rank_sale': str(channel_rank) if is_first_row_for_channel else '',
+                                'rank_last_sale': str(channel_last_rank) if is_first_row_for_channel else '',
                             }
                             all_rows_to_display.append(row_data)
                             is_first_row_for_channel = False
