@@ -446,7 +446,15 @@ def main():
 
 
     page = st.sidebar.radio("Page", ["Overview", "Channel", "Compare"])
-    st.title("Shopee ROAS Dashboard")
+    
+    # --- NEW: Dynamic Title ---
+    first_time_col_name = ""
+    for i, col in enumerate(wide.columns):
+        if is_time_col(str(col)):
+            first_time_col_name = str(col)
+            break
+            
+    st.title(f"Shopee ROAS Dashboard {first_time_col_name}")
     st.caption(f"Last refresh: {now_ts.strftime('%Y-%m-%d %H:%M:%S')}")
 
     mask = (
