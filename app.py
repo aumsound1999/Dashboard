@@ -1,4 +1,4 @@
-# app.py
+# -*- coding: utf-8 -*-
 # Shopee ROAS Dashboard — Overview • Channel • Compare
 # อ่านข้อมูลจาก Google Sheet (CSV export) ผ่าน Secrets:
 #    ROAS_CSV_URL="https://docs.google.com/spreadsheets/d/<ID>/gviz/tqx=out=csv&sheet=<SHEET>"
@@ -19,11 +19,13 @@ import plotly.express as px
 
 st.set_page_config(page_title="Shopee ROAS", layout="wide")
 
-# IMPROVEMENT: ใช้ Constants เพื่อให้อ่านง่ายและแก้ไขสะดวก
+# =============================================================================
+# ส่วนของการตั้งค่าและค่าคงที่ (Configuration and Constants)
+# =============================================================================
 METRIC_COLUMNS = ["sales", "orders", "ads", "view", "ads_ro_raw", "misc"]
 V_COLUMNS = [f"v{i}" for i in range(len(METRIC_COLUMNS))]
 
-# --- NEW: Define staff and their channels ---
+# --- NEW: กำหนดร้านค้าในความดูแลของพนักงานแต่ละคน ---
 STAFF_CHANNELS = {
     "jen": [
         "luckyrich_mart", "prosperway_store", "richvibe_market", "starshop_789",
@@ -36,25 +38,25 @@ STAFF_CHANNELS = {
     ]
 }
 
-# -----------------------------------------------------------------------------
-# Helpers: detect & parse
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Helper Functions: ฟังก์ชันช่วยในการตรวจสอบและแปลงข้อมูล
+# =============================================================================
 
 TIME_COL_PATTERN = re.compile(r"^[A-Z]\d{1,2}\s+\d{1,2}:\d{1,2}$") # e.g., D21 12:45
 
 def is_time_col(col: str) -> bool:
+    """ตรวจสอบว่าชื่อคอลัมน์เป็นรูปแบบของเวลาหรือไม่"""
     return isinstance(col, str) and TIME_COL_PATTERN.match(col.strip()) is not None
 
 def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") -> dict:
     """
-    CRITICAL FIX: แก้ไข Logic การอ่านเวลาให้ถูกต้องตามโครงสร้างไฟล์
+    แปลงชื่อคอลัมน์ที่เป็นเวลา (เช่น 'D21 12:45') ให้เป็นข้อมูล Timestamp จริง
     - ยึดคอลัมน์เวลา 'แรกสุด' (ซ้ายสุด) เป็นข้อมูลล่าสุด
     - คำนวณเวลาย้อนหลังไปยังคอลัมน์ทางขวา
     """
     timestamps = {}
     now = pd.Timestamp.now(tz=tz)
     
-    # Get only the columns that match the time format, in their original order
     time_cols_only = [h for h in headers if is_time_col(h)]
     if not time_cols_only:
         return {h: pd.NaT for h in headers}
@@ -62,7 +64,7 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
     temp_timestamps = {}
     previous_ts = pd.NaT
 
-    # Iterate FORWARDS through the time columns, as the first one is the latest
+    # วนลูปไปข้างหน้า เพราะคอลัมน์แรกสุดคือเวลาล่าสุด
     for hdr in time_cols_only:
         hdr_strip = hdr.strip()
         m = re.match(r"^[A-Z](\d{1,2})\s+(\d{1,2}):(\d{1,2})$", hdr_strip)
@@ -72,11 +74,10 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
         d, hh, mm = map(int, m.groups())
         
         if pd.isna(previous_ts):
-            # ANCHORING LOGIC: This runs only for the very first time column found
-            # Assume its day number 'd' refers to a date at or before 'now'.
-            # Start with today and go backwards until we find a matching day number.
+            # ANCHORING LOGIC: ส่วนนี้จะทำงานแค่ครั้งเดียวสำหรับคอลัมน์เวลาคอลัมน์แรก
+            # เพื่อหา 'วันที่' ที่ถูกต้องโดยอิงจากวันปัจจุบันแล้วย้อนหลังไป
             anchor_date_candidate = now
-            for _ in range(45): # Safety break after 45 days
+            for _ in range(45): # Safety break
                 if anchor_date_candidate.day == d:
                     break
                 anchor_date_candidate -= pd.Timedelta(days=1)
@@ -92,20 +93,20 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
                 temp_timestamps[hdr] = pd.NaT
 
         else:
-            # ITERATION LOGIC: For all subsequent (older) time columns
+            # ITERATION LOGIC: สำหรับคอลัมน์เวลาถัดๆ ไป (ที่เก่ากว่า)
             try:
-                # Tentatively create a timestamp using the year/month of the previous (newer) data point
+                # ลองสร้าง timestamp โดยใช้ปี/เดือนของข้อมูลที่ใหม่กว่าก่อนหน้า
                 ts = pd.Timestamp(year=previous_ts.year, month=previous_ts.month, day=d, hour=hh, minute=mm, tz=tz)
                 
-                # The current timestamp must be EARLIER than the previous one.
-                # If it's not, it means we've crossed a month boundary going backwards in time.
+                # timestamp ปัจจุบันต้อง 'เก่ากว่า' อันก่อนหน้า
+                # ถ้าไม่ใช่ แสดงว่าข้ามเดือน (เช่น จากวันที่ 1 ไปวันที่ 31 ของเดือนก่อน)
                 if ts >= previous_ts:
                     ts -= pd.DateOffset(months=1)
                 
                 temp_timestamps[hdr] = ts
                 previous_ts = ts
             except ValueError:
-                # This can happen if a day 'd' doesn't exist in the guessed month (e.g. 31 in Feb)
+                # กรณีวันที่ไม่มีในเดือนนั้นๆ (เช่น 31 ก.พ.)
                 try:
                     prev_month_date = previous_ts - pd.DateOffset(months=1)
                     ts = pd.Timestamp(year=prev_month_date.year, month=prev_month_date.month, day=d, hour=hh, minute=mm, tz=tz)
@@ -114,7 +115,7 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
                 except ValueError:
                     temp_timestamps[hdr] = pd.NaT
 
-    # Map the parsed timestamps back to the full list of original headers
+    # Map ผลลัพธ์กลับไปยัง list ของ headers ทั้งหมด
     for hdr in headers:
         timestamps[hdr] = temp_timestamps.get(hdr, pd.NaT)
         
@@ -123,19 +124,16 @@ def parse_timestamps_from_headers(headers: list[str], tz: str = "Asia/Bangkok") 
 
 def parse_metrics_cell(s: str):
     """
-    FIX: ทำให้การ parse ข้อมูลมีความแม่นยำมากขึ้น โดยจัดการกับค่าที่หายไป (,,) ได้ถูกต้อง
+    แปลงข้อมูลในเซลล์ที่มีหลายค่า (เช่น "1000,10,50.5, ...") ให้ออกมาเป็น list ของตัวเลข
     """
     if not isinstance(s, str):
         return [np.nan] * 6
     
     s_clean = re.sub(r"[^0-9\.\-,]", "", s)
-    # ไม่ลบ empty string ออก เพื่อรักษาตำแหน่งของข้อมูล
     parts = s_clean.split(",")
     nums = []
     
-    # วนลูปตามจำนวนค่าที่คาดหวัง (6 ค่า)
     for p in parts[:6]:
-        # แปลงค่าว่างให้เป็น NaN
         if p.strip() == "":
             nums.append(np.nan)
             continue
@@ -144,42 +142,39 @@ def parse_metrics_cell(s: str):
         except (ValueError, TypeError):
             nums.append(np.nan)
     
-    # เติม NaN หากข้อมูลที่มาสั้นกว่า 6 ค่า
+    # เติม NaN หากข้อมูลมาไม่ครบ 6 ค่า
     while len(nums) < 6:
         nums.append(np.nan)
     return nums
 
 def parse_campaign_details(campaign_string: str):
     """
-    [CORRECTED] อัปเกรดฟังก์ชันให้สามารถอ่านข้อมูลแคมเปญในรูปแบบ Dictionary (JSON) ใหม่ได้
+    แปลงข้อมูลแคมเปญที่อยู่ในรูปแบบ String Dictionary (JSON-like)
     """
     if not isinstance(campaign_string, str):
         return []
 
     try:
-        # ast.literal_eval สามารถแปลง String ที่หน้าตาเหมือน Dictionary ของ Python ได้
+        # ast.literal_eval เป็นวิธีที่ปลอดภัยในการแปลง String เป็น Python object
         data_dict = ast.literal_eval(campaign_string)
         
-        # ตรวจสอบว่าเป็น Dictionary และมี key 'campaigns' อยู่ข้างในหรือไม่
         if isinstance(data_dict, dict) and 'campaigns' in data_dict:
-            # ดึง list ของ campaign ออกมา ซึ่งอาจจะเป็น list ว่างก็ได้
             return data_dict.get('campaigns', [])
         else:
-            # ถ้าโครงสร้างไม่ถูกต้อง ให้คืนค่าเป็น list ว่าง
             return []
             
     except (ValueError, SyntaxError):
-        # จัดการกรณีที่ String ไม่ใช่รูปแบบที่ถูกต้อง
+        # หาก String format ไม่ถูกต้อง
         return []
 
-# -----------------------------------------------------------------------------
-# Loaders
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Data Loading: ฟังก์ชันสำหรับโหลดข้อมูลจากแหล่งข้อมูล
+# =============================================================================
 
 @st.cache_data(ttl=600, show_spinner="Fetching latest data...")
 def fetch_csv_text():
-    # --- CORRECTED: Read from os.environ for Hugging Face ---
-    url = os.environ.get("ROAS_CSV_URL", "") # Read from environment variable
+    """ดึงข้อมูล CSV จาก URL ที่อยู่ใน Hugging Face Secrets"""
+    url = os.environ.get("ROAS_CSV_URL", "")
     if not url:
         raise RuntimeError("Missing Secrets: ROAS_CSV_URL is not set in Hugging Face secrets.")
     r = requests.get(url, timeout=45)
@@ -188,11 +183,15 @@ def fetch_csv_text():
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_wide_df():
+    """โหลดข้อมูล CSV text ให้เป็น Pandas DataFrame"""
     csv_text = fetch_csv_text()
     return pd.read_csv(io.StringIO(csv_text))
 
 def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
-    # IMPROVEMENT: Automatically detect all ID columns before the first time column
+    """
+    ฟังก์ชันหลักในการแปลง DataFrame จากรูปแบบ Wide เป็น Long
+    """
+    # ตรวจหาคอลัมน์ ID (เช่น 'channel', 'campaign') โดยอัตโนมัติ
     first_time_col_index = -1
     for i, col in enumerate(df_wide.columns):
         if is_time_col(str(col)):
@@ -210,22 +209,25 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
          
     ts_map = parse_timestamps_from_headers(df_wide.columns, tz=tz)
 
+    # ทำการ 'melt' หรือ 'unpivot'
     m = df_wide.melt(id_vars=id_cols, value_vars=time_cols,
-                       var_name="time_col", value_name="raw")
+                     var_name="time_col", value_name="raw")
     m["timestamp"] = m["time_col"].map(ts_map)
 
+    # Parse ข้อมูลในเซลล์ raw ออกมาเป็นคอลัมน์ v0, v1, v2, ...
     V = pd.DataFrame(m["raw"].apply(parse_metrics_cell).tolist(), columns=V_COLUMNS)
     
-    # Build rename dictionary for known and potential ID columns
+    # เปลี่ยนชื่อคอลัมน์ ID ที่ตรวจพบ
     rename_dict = {}
     if len(id_cols) > 0:
-        rename_dict[id_cols[0]] = 'channel' # Assume first is always channel
+        rename_dict[id_cols[0]] = 'channel'
     if len(id_cols) > 1:
-        rename_dict[id_cols[1]] = 'campaign' # Assume second is campaign
+        rename_dict[id_cols[1]] = 'campaign'
 
     out = pd.concat([m[["timestamp"] + id_cols], V], axis=1).rename(columns=rename_dict)
     out = out.dropna(subset=["timestamp"]).reset_index(drop=True)
 
+    # สร้างคอลัมน์ sales, orders, ads, ... จาก v0, v1, v2, ...
     for i, name in enumerate(METRIC_COLUMNS):
         out[name] = pd.to_numeric(out[f"v{i}"], errors="coerce")
     
@@ -234,25 +236,29 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def build_long(wide):
+    """Wrapper function สำหรับ cache การแปลง wide to long"""
     return long_from_wide(wide)
 
-# -----------------------------------------------------------------------------
-# Transformations
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Transformations: ฟังก์ชันคำนวณและจัดการข้อมูล
+# =============================================================================
 
 def safe_tz(ts: pd.Series, tz="Asia/Bangkok"):
+    """ทำให้คอลัมน์ Timestamp มี Timezone ที่ถูกต้อง"""
     ts = pd.to_datetime(ts, errors="coerce")
     if ts.dt.tz is None:
         return ts.dt.tz_localize(tz)
     return ts.dt.tz_convert(tz)
 
 def normalize_hour_key(df: pd.DataFrame, tz="Asia/Bangkok"):
+    """สร้างคอลัมน์ 'hour_key' โดยปัดเศษเวลาลงเป็นชั่วโมงเต็ม"""
     df = df.copy()
     if "timestamp" in df.columns:
         df["hour_key"] = safe_tz(df["timestamp"], tz=tz).dt.floor("H")
     return df
 
 def pick_snapshot_at(df: pd.DataFrame, at_ts: pd.Timestamp, tz: str = "Asia/Bangkok") -> pd.DataFrame:
+    """ดึงข้อมูลล่าสุดของแต่ละ Channel ณ ชั่วโมงที่กำหนด"""
     if df is None or df.empty:
         return pd.DataFrame()
     x = normalize_hour_key(df, tz=tz)
@@ -269,6 +275,7 @@ def pick_snapshot_at(df: pd.DataFrame, at_ts: pd.Timestamp, tz: str = "Asia/Bang
     return y.tail(1).reset_index(drop=True)
 
 def current_and_yesterday_snapshots(df: pd.DataFrame, tz="Asia/Bangkok"):
+    """ดึงข้อมูล snapshot ล่าสุดและข้อมูลของเมื่อวานในชั่วโมงเดียวกัน"""
     if df.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.NaT
     cur_ts = df["timestamp"].max()
@@ -277,6 +284,7 @@ def current_and_yesterday_snapshots(df: pd.DataFrame, tz="Asia/Bangkok"):
     return cur_snap, y_snap, cur_ts.floor("H")
 
 def kpis_from_snapshot(snap: pd.DataFrame):
+    """คำนวณ KPI หลักจากข้อมูล Snapshot"""
     if snap.empty:
         return dict(Sales=0.0, Orders=0.0, Ads=0.0, SaleRO=np.nan, AdsRO_avg=np.nan)
     
@@ -292,11 +300,13 @@ def kpis_from_snapshot(snap: pd.DataFrame):
     return dict(Sales=sales, Orders=orders, Ads=ads, SaleRO=sale_ro, AdsRO_avg=ads_ro_avg)
 
 def pct_delta(curr, prev):
+    """คำนวณเปอร์เซ็นต์การเปลี่ยนแปลง"""
     if pd.isna(prev) or pd.isna(curr) or prev == 0:
         return None
     return (curr - prev) * 100.0 / prev
 
 def hourly_latest(df: pd.DataFrame, tz="Asia/Bangkok"):
+    """กรองเอาข้อมูลล่าสุดในแต่ละชั่วโมงของแต่ละ Channel"""
     if df.empty:
         return pd.DataFrame()
     d = df.copy()
@@ -307,6 +317,7 @@ def hourly_latest(df: pd.DataFrame, tz="Asia/Bangkok"):
     return d.reset_index(drop=True)
 
 def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
+    """คำนวณค่า 'รายชั่วโมง' (ผลต่างจากชั่วโมงก่อนหน้า)"""
     if df.empty:
         return pd.DataFrame(columns=df.columns.tolist() + ["hour_key", "day", "hstr", "_val"])
 
@@ -339,6 +350,7 @@ def calculate_hourly_values(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     return H
 
 def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
+    """สร้าง Pivot table เพื่อใช้พล็อตกราฟ Overlay"""
     H_with_vals = calculate_hourly_values(df, metric, tz)
     if H_with_vals.empty:
         return pd.DataFrame()
@@ -348,11 +360,12 @@ def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     pivot = H_with_vals.pivot_table(index="hstr", columns="day", values="_val", aggfunc=agg_function).sort_index()
     return pivot
 
-# -----------------------------------------------------------------------------
-# UI Components
-# -----------------------------------------------------------------------------
+# =============================================================================
+# UI Components: ส่วนประกอบของหน้าจอที่แสดงผล
+# =============================================================================
 
 def display_kpi_metrics(cur: dict, prev: dict, snapshot_hour):
+    """แสดงกล่อง KPI 5 กล่องหลัก"""
     cols = st.columns(5)
     cols[0].metric("Sales", f"{cur['Sales']:,.0f}",
                    delta=(f"{pct_delta(cur['Sales'], prev['Sales']):+.1f}%" if prev['Sales'] else None))
@@ -369,15 +382,15 @@ def display_kpi_metrics(cur: dict, prev: dict, snapshot_hour):
     if pd.notna(snapshot_hour):
         st.caption(f"Comparing snapshot at {snapshot_hour.strftime('%Y-%m-%d %H:00')}")
 
-# -----------------------------------------------------------------------------
-# Main App
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Main App: ส่วนหลักของโปรแกรม Streamlit
+# =============================================================================
 
 def main():
     st.sidebar.header("Filters")
     if st.sidebar.button("Reload Data", use_container_width=True):
         st.cache_data.clear()
-        st.experimental_rerun()
+        st.rerun()
 
     try:
         wide = load_wide_df()
@@ -399,6 +412,7 @@ def main():
     date_max = max_ts.date()
     date_min_default = (max_ts - pd.Timedelta(days=2)).date()
 
+    # --- ส่วนของ Filters ใน Sidebar ---
     d1, d2 = st.sidebar.date_input(
         "Date range (default 3 days)",
         value=(date_min_default, date_max),
@@ -414,14 +428,13 @@ def main():
 
     all_channels = sorted(df_long["channel"].dropna().unique().tolist())
     
-    # --- NEW: Channel Grouping Logic ---
+    # --- Logic การจัดกลุ่ม Channel ตามพนักงาน ---
     jen_channels = [ch for ch in STAFF_CHANNELS["jen"] if ch in all_channels]
     fon_channels = [ch for ch in STAFF_CHANNELS["fon"] if ch in all_channels]
     
     jen_fon_channels = set(jen_channels + fon_channels)
     mint_channels = [ch for ch in all_channels if ch not in jen_fon_channels]
 
-    # Create options with groups
     chan_options = ["[All]", "[Jen]", "[Fon]", "[Mint]"] + all_channels
     chosen = st.sidebar.multiselect("Channels", options=chan_options, default=["[All]"])
 
@@ -439,7 +452,6 @@ def main():
         if "[Mint]" in chosen:
             temp_channels.update(mint_channels)
         
-        # Add individual channels that are not part of a selected group
         for ch in chosen:
             if ch not in ["[Jen]", "[Fon]", "[Mint]"]:
                 temp_channels.add(ch)
@@ -448,7 +460,7 @@ def main():
 
     page = st.sidebar.radio("Page", ["Overview", "Channel", "Compare"])
     
-    # --- NEW: Dynamic Title ---
+    # --- ส่วนหัวของหน้าจอ (Title) ---
     first_time_col_name = ""
     for i, col in enumerate(wide.columns):
         if is_time_col(str(col)):
@@ -458,6 +470,7 @@ def main():
     st.title(f"Shopee ROAS Dashboard {first_time_col_name}")
     st.caption(f"Last refresh: {now_ts.strftime('%Y-%m-%d %H:%M:%S')}")
 
+    # --- กรองข้อมูลตามที่ผู้ใช้เลือก ---
     mask = (
         (df_long["timestamp"] >= start_ts) &
         (df_long["timestamp"] <= end_ts) &
@@ -465,6 +478,7 @@ def main():
     )
     d_filtered = df_long.loc[mask].copy()
 
+    # --- การแสดงผลตามหน้าที่เลือก (Page Routing) ---
     if page == "Overview":
         st.subheader("Overview (All selected channels)")
         if d_filtered.empty:
@@ -492,11 +506,11 @@ def main():
             if not piv_sale.empty:
                 for day in piv_sale.columns:
                     fig.add_trace(go.Scatter(x=piv_sale.index, y=piv_sale[day], mode="lines+markers", 
-                                              name=f"{str(day)} (Sale RO)", line=dict(dash='solid')))
+                                             name=f"{str(day)} (Sale RO)", line=dict(dash='solid')))
             if not piv_ads.empty:
                 for day in piv_ads.columns:
                     fig.add_trace(go.Scatter(x=piv_ads.index, y=piv_ads[day], mode="lines+markers", 
-                                              name=f"{str(day)} (Ads RO)", line=dict(dash='dash')))
+                                             name=f"{str(day)} (Ads RO)", line=dict(dash='dash')))
             
             if not piv_sale.empty or not piv_ads.empty:
                 fig.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title="ROAS")
@@ -568,7 +582,7 @@ def main():
                             st.markdown(f"สถานะแอด: **เปิดใช้งาน**")
                             st.markdown("---")
         
-        # --- CORRECTED: Campaign Data Display Section ---
+        # --- ส่วนแสดงข้อมูลแคมเปญ ---
         st.markdown("### Campaign Data")
         
         view_mode = st.radio(
@@ -578,14 +592,12 @@ def main():
             label_visibility="collapsed"
         )
 
-        # Logic to dynamically find the first two columns (channel and campaign data)
         first_time_col_index = -1
         for i, col in enumerate(wide.columns):
             if is_time_col(str(col)):
                 first_time_col_index = i
                 break
         
-        # Check if we found at least two ID columns before the time columns
         if first_time_col_index == -1 or first_time_col_index < 2:
             st.warning("ไม่สามารถระบุคอลัมน์ channel และ campaign จากข้อมูลดิบได้")
         else:
@@ -600,7 +612,6 @@ def main():
                 st.table(campaign_data_df[campaign_data_df['channel'].isin(selected_channels)])
             
             elif view_mode == "แสดงรายละเอียด (Formatted)":
-                # Filter data based on selected channels BEFORE processing
                 df_long_filtered_for_rank = df_long[df_long['channel'].isin(selected_channels)]
                 campaign_data_df_filtered = campaign_data_df[campaign_data_df['channel'].isin(selected_channels)]
                 
@@ -608,23 +619,21 @@ def main():
                     st.info("ไม่พบข้อมูลสำหรับร้านค้าที่เลือก")
                     st.stop()
                     
-                # Prepare latest daily stats for merging
                 latest_daily_stats = df_long_filtered_for_rank.loc[df_long_filtered_for_rank.groupby('channel')['timestamp'].idxmax()].copy()
                 latest_daily_stats['sale_ro_day'] = latest_daily_stats['sales'] / latest_daily_stats['ads'].replace(0, np.nan)
                 latest_daily_stats.rename(columns={'ads_ro_raw': 'ads_ro_day'}, inplace=True)
                 
-                # --- Calculate Today's Ranks ---
+                # --- คำนวณอันดับยอดขายวันนี้ ---
                 ranking_data = latest_daily_stats[['channel', 'sales']].copy()
                 ranking_data.rename(columns={'sales': 'sale_day'}, inplace=True)
                 ranking_data['sale_day'].fillna(0, inplace=True)
                 ranking_data['rank_sale'] = ranking_data['sale_day'].rank(method='dense', ascending=False).astype(int)
                 rank_dict = pd.Series(ranking_data.rank_sale.values, index=ranking_data.channel).to_dict()
 
-                # --- NEW: Calculate Yesterday's Ranks & Growth Rank ---
+                # --- คำนวณอันดับการเติบโตเทียบกับเมื่อวาน ---
                 yesterday_ts = df_long_filtered_for_rank['timestamp'].max() - pd.Timedelta(days=1)
                 yesterday_stats = pick_snapshot_at(df_long_filtered_for_rank, yesterday_ts, tz=tz)
                 
-                # Merge today's and yesterday's sales data
                 comparison_df = ranking_data[['channel', 'sale_day']].copy()
                 if not yesterday_stats.empty:
                     last_sales_df = yesterday_stats[['channel', 'sales']].copy()
@@ -641,7 +650,6 @@ def main():
 
                 all_rows_to_display = []
                 
-                # --- Iterate in ORIGINAL order ---
                 unique_channels = campaign_data_df_filtered['channel'].unique()
                 
                 channel_num = 0
@@ -659,20 +667,19 @@ def main():
                         setting_info = {}
                         parsed_campaigns = []
                     
-                    # Get daily stats for the current channel
+                    # ดึงข้อมูลสถิติรายวันของ channel ปัจจุบัน
                     channel_stats = latest_daily_stats[latest_daily_stats['channel'] == channel_name]
                     sale_ro_day_val = channel_stats['sale_ro_day'].iloc[0] if not channel_stats.empty else np.nan
                     ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else np.nan
                     sale_day_val = channel_stats['sales'].iloc[0] if not channel_stats.empty else np.nan
                     saleads_day_val = channel_stats['view'].iloc[0] if not channel_stats.empty else np.nan
                     
-                    # Get ranks from dictionaries
+                    # ดึงอันดับ
                     channel_rank = rank_dict.get(channel_name, '')
                     channel_last_rank = rank_last_dict.get(channel_name, '')
 
-                    # Get yesterday's sales for the new column
+                    # ดึงยอดขายของเมื่อวาน
                     last_sale_day_val = comparison_df[comparison_df['channel'] == channel_name]['last_sale_day'].iloc[0] if channel_name in comparison_df['channel'].values else np.nan
-
 
                     if not parsed_campaigns:
                         row_data = {
@@ -728,24 +735,13 @@ def main():
                 else:
                     display_df = pd.DataFrame(all_rows_to_display)
                     
-                    # Calculate height for dataframe to avoid scrollbar
                     height = (len(display_df) + 1) * 35 + 3
 
-                    # Define formatters for styling
                     formatters = {
-                        'budget': '{:,.0f}',
-                        'sales': '{:,.0f}',
-                        'orders': '{:,.0f}',
-                        'roas': '{:.2f}',
-                        'SaleRO (Day)': '{:.2f}',
-                        'AdsRO (Day)': '{:.2f}',
-                        'GMV_Q': '{:.1f}',
-                        'GMV_U': '{:.0f}',
-                        'AUTO_Q': '{:.1f}',
-                        'AUTO_U': '{:.0f}',
-                        'sale_day': '{:,.0f}',
-                        'saleads_day': '{:,.0f}',
-                        'salelast_day': '{:,.0f}',
+                        'budget': '{:,.0f}', 'sales': '{:,.0f}', 'orders': '{:,.0f}',
+                        'roas': '{:.2f}', 'SaleRO (Day)': '{:.2f}', 'AdsRO (Day)': '{:.2f}',
+                        'GMV_Q': '{:.1f}', 'GMV_U': '{:.0f}', 'AUTO_Q': '{:.1f}', 'AUTO_U': '{:.0f}',
+                        'sale_day': '{:,.0f}', 'saleads_day': '{:,.0f}', 'salelast_day': '{:,.0f}',
                     }
 
                     st.dataframe(
@@ -789,11 +785,11 @@ def main():
             if not piv_sale_ch.empty:
                 for day in piv_sale_ch.columns:
                     fig_ch.add_trace(go.Scatter(x=piv_sale_ch.index, y=piv_sale_ch[day], mode="lines+markers", 
-                                                  name=f"{str(day)} (Sale RO)", line=dict(dash='solid')))
+                                                name=f"{str(day)} (Sale RO)", line=dict(dash='solid')))
             if not piv_ads_ch.empty:
                 for day in piv_ads_ch.columns:
                     fig_ch.add_trace(go.Scatter(x=piv_ads_ch.index, y=piv_ads_ch[day], mode="lines+markers", 
-                                                  name=f"{str(day)} (Ads RO)", line=dict(dash='dash')))
+                                                name=f"{str(day)} (Ads RO)", line=dict(dash='dash')))
             
             if not piv_sale_ch.empty or not piv_ads_ch.empty:
                 fig_ch.update_layout(height=420, xaxis_title="Time (HH:MM)", yaxis_title="ROAS")
@@ -827,14 +823,9 @@ def main():
             else:
                 st.info("No data for heatmap.")
         
-        # --- NEW: Campaign Data Table for Channel Page ---
+        # --- แสดงตาราง Campaign สำหรับหน้า Channel ---
         st.markdown("### Campaign Data")
         
-        # Filter wide data for the selected channel
-        campaign_data_df_channel = wide[wide.iloc[:, 0] == ch]
-
-        # Reuse the logic from Overview page, but with channel-specific data
-        # Logic to dynamically find the first two columns
         first_time_col_index = -1
         for i, col in enumerate(wide.columns):
             if is_time_col(str(col)):
@@ -862,7 +853,6 @@ def main():
                 channel_num = 0
                 for channel_name in campaign_data_df_filtered['channel'].unique():
                     channel_num += 1
-                    # ... (rest of the table generation logic)
                     is_first_row_for_channel = True
                     details_string = campaign_data_df_filtered[campaign_data_df_filtered['channel'] == channel_name]['campaign_data_string'].iloc[0]
                     try:
@@ -874,31 +864,19 @@ def main():
                         parsed_campaigns = []
                     
                     channel_stats = latest_daily_stats[latest_daily_stats['channel'] == channel_name]
-                    # ... (get all other stats like sale_day_val, etc.)
                     sale_ro_day_val = channel_stats['sale_ro_day'].iloc[0] if not channel_stats.empty else np.nan
                     ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else np.nan
                     sale_day_val = channel_stats['sales'].iloc[0] if not channel_stats.empty else np.nan
                     saleads_day_val = channel_stats['view'].iloc[0] if not channel_stats.empty else np.nan
                     
-                    # For the channel page, ranks are not applicable, so we can hide them or show 'N/A'
                     if not parsed_campaigns:
                         row_data = {
-                            'No.': str(channel_num),
-                            'channel': channel_name,
-                            'type': setting_info.get('type', ''),
-                            'GMV_Q': setting_info.get('gmv_quota'),
-                            'GMV_U': setting_info.get('gmv_user'),
-                            'AUTO_Q': setting_info.get('auto_quota'),
-                            'AUTO_U': setting_info.get('auto_user'),
-                            'id': '',
-                            'budget': np.nan,
-                            'sales': np.nan,
-                            'orders': np.nan,
-                            'roas': np.nan,
-                            'SaleRO (Day)': sale_ro_day_val,
-                            'AdsRO (Day)': ads_ro_day_val,
-                            'saleads_day': saleads_day_val,
-                            'sale_day': sale_day_val,
+                            'No.': str(channel_num), 'channel': channel_name, 'type': setting_info.get('type', ''),
+                            'GMV_Q': setting_info.get('gmv_quota'), 'GMV_U': setting_info.get('gmv_user'),
+                            'AUTO_Q': setting_info.get('auto_quota'), 'AUTO_U': setting_info.get('auto_user'),
+                            'id': '', 'budget': np.nan, 'sales': np.nan, 'orders': np.nan, 'roas': np.nan,
+                            'SaleRO (Day)': sale_ro_day_val, 'AdsRO (Day)': ads_ro_day_val,
+                            'saleads_day': saleads_day_val, 'sale_day': sale_day_val,
                         }
                         all_rows_to_display.append(row_data)
                     else:
@@ -912,10 +890,8 @@ def main():
                                 'AUTO_Q': setting_info.get('auto_quota') if is_first_row_for_channel else np.nan,
                                 'AUTO_U': setting_info.get('auto_user') if is_first_row_for_channel else np.nan,
                                 'id': campaign.get('id'),
-                                'budget': campaign.get('budget'),
-                                'sales': campaign.get('sales'),
-                                'orders': campaign.get('orders'),
-                                'roas': campaign.get('roas'),
+                                'budget': campaign.get('budget'), 'sales': campaign.get('sales'),
+                                'orders': campaign.get('orders'), 'roas': campaign.get('roas'),
                                 'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
                                 'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
                                 'saleads_day': saleads_day_val if is_first_row_for_channel else np.nan,
@@ -964,7 +940,7 @@ def main():
             Total_Ads=("ads", "sum"),
             Avg_SaleRO=("SaleRO", "mean")
         ).reset_index()
-        st.dataframe(kpi_comparison.round(2), use_container_width=True)
+        st.dataframe(kpi_comparison.round(2), use_container_width=True, hide_index=True)
 
         st.markdown("#### Hourly Performance vs Baseline")
         base = st.selectbox("Baseline channel", options=pick, index=0)
