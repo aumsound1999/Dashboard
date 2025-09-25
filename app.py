@@ -469,9 +469,7 @@ def main():
     chosen = st.sidebar.multiselect("Channels", options=chan_options, default=["[All]"])
 
     selected_channels = []
-    if not chosen:
-        selected_channels = []
-    elif "[All]" in chosen:
+    if not chosen or "[All]" in chosen:
         selected_channels = all_channels
     else:
         temp_channels = set()
@@ -794,7 +792,11 @@ def main():
     elif page == "Channel":
         st.header("เจาะลึกรายร้านค้า (Channel Detail)")
         
-        ch = st.selectbox("เลือกร้านค้าเพื่อเจาะลึก", options=all_channels, key="channel_select")
+        if not selected_channels:
+            st.warning("Please select at least one channel from the sidebar filter first.")
+            st.stop()
+            
+        ch = st.selectbox("เลือกร้านค้าเพื่อเจาะลึก", options=selected_channels, key="channel_select")
         
         ch_df = d_filtered[d_filtered["channel"] == ch].copy()
         
@@ -977,11 +979,11 @@ def main():
 
     elif page == "Compare":
         st.subheader("Channel Comparison")
-        if len(all_channels) < 2:
-            st.info("You need at least 2 channels in your data to use the compare feature.")
+        if len(selected_channels) < 2:
+            st.info("Please select at least 2 channels from the sidebar filter to compare.")
             st.stop()
 
-        pick = st.multiselect("Pick 2–4 channels", options=all_channels, default=all_channels[:min(4, len(all_channels))], max_selections=4)
+        pick = st.multiselect("Pick 2–4 channels", options=selected_channels, default=selected_channels[:min(4, len(selected_channels))], max_selections=4)
         if len(pick) < 2:
             st.info("Please pick at least 2 channels to compare.")
             st.stop()
