@@ -703,6 +703,7 @@ def main():
                     ads_ro_day_val = channel_stats['ads_ro_day'].iloc[0] if not channel_stats.empty else np.nan
                     sale_day_val = channel_stats['sales'].iloc[0] if not channel_stats.empty else np.nan
                     saleads_day_val = channel_stats['view'].iloc[0] if not channel_stats.empty else np.nan
+                    ads_bugget_val = channel_stats['ads'].iloc[0] if not channel_stats.empty else np.nan
                     
                     # ดึงอันดับ
                     channel_rank = rank_dict.get(channel_name, '')
@@ -730,6 +731,7 @@ def main():
                             'saleads_day': saleads_day_val,
                             'sale_day': sale_day_val,
                             'salelast_day': last_sale_day_val,
+                            'ads_bugget': ads_bugget_val,
                             'rank_sale': str(channel_rank),
                             'rank_last_sale': str(channel_last_rank),
                         }
@@ -754,6 +756,7 @@ def main():
                                 'saleads_day': saleads_day_val if is_first_row_for_channel else np.nan,
                                 'sale_day': sale_day_val if is_first_row_for_channel else np.nan,
                                 'salelast_day': last_sale_day_val if is_first_row_for_channel else np.nan,
+                                'ads_bugget': ads_bugget_val if is_first_row_for_channel else np.nan,
                                 'rank_sale': str(channel_rank) if is_first_row_for_channel else '',
                                 'rank_last_sale': str(channel_last_rank) if is_first_row_for_channel else '',
                             }
@@ -772,6 +775,7 @@ def main():
                         'roas': '{:.2f}', 'SaleRO (Day)': '{:.2f}', 'AdsRO (Day)': '{:.2f}',
                         'GMV_Q': '{:.1f}', 'GMV_U': '{:.0f}', 'AUTO_Q': '{:.1f}', 'AUTO_U': '{:.0f}',
                         'sale_day': '{:,.0f}', 'saleads_day': '{:,.0f}', 'salelast_day': '{:,.0f}',
+                        'ads_bugget': '{:,.0f}',
                     }
 
                     st.dataframe(
