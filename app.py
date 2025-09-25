@@ -171,7 +171,7 @@ def parse_campaign_details(campaign_string: str):
 # Data Loading: ฟังก์ชันสำหรับโหลดข้อมูลจากแหล่งข้อมูล
 # =============================================================================
 
-@st.cache_data(ttl=600, show_spinner="Fetching latest data...")
+@st.cache_data(ttl=300, show_spinner="Fetching latest data...")
 def fetch_csv_text():
     """ดึงข้อมูล CSV จาก URL ที่อยู่ใน Hugging Face Secrets"""
     url = os.environ.get("ROAS_CSV_URL", "")
@@ -181,7 +181,7 @@ def fetch_csv_text():
     r.raise_for_status()
     return r.text
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_wide_df():
     """โหลดข้อมูล CSV text ให้เป็น Pandas DataFrame"""
     csv_text = fetch_csv_text()
@@ -234,7 +234,7 @@ def long_from_wide(df_wide: pd.DataFrame, tz="Asia/Bangkok") -> pd.DataFrame:
     out["SaleRO"] = out["sales"] / out["ads"].replace(0, np.nan)
     return out
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def build_long(wide):
     """Wrapper function สำหรับ cache การแปลง wide to long"""
     return long_from_wide(wide)
@@ -751,7 +751,7 @@ def main():
                                 'sales': campaign.get('sales'),
                                 'orders': campaign.get('orders'),
                                 'view': campaign.get('view'),
-                                'clicks': campaign.get('clicks'),
+                                'adsuser': campaign.get('clicks'),
                                 'roas': campaign.get('roas'),
                                 'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
                                 'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
