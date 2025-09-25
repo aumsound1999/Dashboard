@@ -726,6 +726,7 @@ def main():
                             'sales': np.nan,
                             'orders': np.nan,
                             'view': np.nan,
+                            'clicks': np.nan,
                             'roas': np.nan,
                             'SaleRO (Day)': sale_ro_day_val,
                             'AdsRO (Day)': ads_ro_day_val,
@@ -752,6 +753,7 @@ def main():
                                 'sales': campaign.get('sales'),
                                 'orders': campaign.get('orders'),
                                 'view': campaign.get('view'),
+                                'clicks': campaign.get('clicks'),
                                 'roas': campaign.get('roas'),
                                 'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
                                 'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
@@ -775,6 +777,7 @@ def main():
                     formatters = {
                         'budget': '{:,.0f}', 'sales': '{:,.0f}', 'orders': '{:,.0f}',
                         'view': '{:,.0f}',
+                        'clicks': '{:.2f}',
                         'roas': '{:.2f}', 'SaleRO (Day)': '{:.2f}', 'AdsRO (Day)': '{:.2f}',
                         'GMV_Q': '{:.1f}', 'GMV_U': '{:.0f}', 'AUTO_Q': '{:.1f}', 'AUTO_U': '{:.0f}',
                         'sale_day': '{:,.0f}', 'saleads_day': '{:,.0f}', 'salelast_day': '{:,.0f}',
