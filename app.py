@@ -360,6 +360,44 @@ def build_overlay_by_day(df: pd.DataFrame, metric: str, tz="Asia/Bangkok"):
     pivot = H_with_vals.pivot_table(index="hstr", columns="day", values="_val", aggfunc=agg_function).sort_index()
     return pivot
 
+def build_channel_hourly_table(df: pd.DataFrame, tz="Asia/Bangkok"):
+    """สร้างตารางข้อมูลรายชั่วโมงสำหรับหน้า Channel"""
+    if df.empty or 'channel' not in df.columns or df['channel'].nunique() == 0:
+        return pd.DataFrame()
+
+    # ดึงข้อมูลล่าสุดรายชั่วโมง และเรียงจากเก่าไปใหม่เพื่อคำนวณ diff
+    H = hourly_latest(df, tz=tz).sort_values("hour_key", ascending=True)
+    if H.empty:
+        return pd.DataFrame()
+
+    # ฟังก์ชันสำหรับหาผลต่างเทียบกับชั่วโมงก่อนหน้า
+    diff_func = lambda s: s.diff().clip(lower=0)
+    
+    # สร้าง DataFrame ใหม่สำหรับตาราง
+    table_df = pd.DataFrame()
+    table_df['Time'] = H['hstr']
+    
+    # คำนวณค่ารายชั่วโมง
+    sales_h = H.groupby('channel')['sales'].transform(diff_func).fillna(0)
+    orders_h = H.groupby('channel')['orders'].transform(diff_func).fillna(0)
+    ads_h = H.groupby('channel')['ads'].transform(diff_func).fillna(0)
+    view_h = H.groupby('channel')['view'].transform(diff_func).fillna(0)
+
+    table_df['Sales'] = sales_h
+    table_df['Orders'] = orders_h
+    table_df['Ads Budget'] = ads_h
+    table_df['Ads View'] = view_h
+
+    # คำนวณ SaleRO รายชั่วโมง
+    ro = sales_h / ads_h.replace(0, np.nan)
+    table_df['SaleRO'] = ro.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    # 'misc' คือค่า Ad Credits ซึ่งเป็นค่าสะสม ไม่ใช่ผลต่างรายชั่วโมง
+    table_df['Ad Credits'] = H['misc']
+
+    # เรียงข้อมูลจากใหม่ไปเก่าเพื่อการแสดงผล
+    return table_df.sort_index(ascending=False).reset_index(drop=True)
+
 # =============================================================================
 # UI Components: ส่วนประกอบของหน้าจอที่แสดงผล
 # =============================================================================
@@ -823,6 +861,26 @@ def main():
             else:
                 st.info("No data for heatmap.")
         
+        # --- NEW: แสดงตารางข้อมูลรายชั่วโมง ---
+        st.markdown(f"### Hourly Breakdown for {ch}")
+        hourly_table = build_channel_hourly_table(ch_df, tz=tz)
+        if hourly_table.empty:
+            st.info("No hourly data to display.")
+        else:
+            formatters = {
+                'Sales': '{:,.0f}',
+                'Orders': '{:,.0f}',
+                'Ads Budget': '{:,.0f}',
+                'Ads View': '{:,.0f}',
+                'SaleRO': '{:.2f}',
+                'Ad Credits': '{:,.0f}'
+            }
+            st.dataframe(
+                hourly_table.style.format(formatters, na_rep='-'),
+                use_container_width=True, 
+                hide_index=True
+            )
+
         # --- แสดงตาราง Campaign สำหรับหน้า Channel ---
         st.markdown("### Campaign Data")
         
@@ -978,3 +1036,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
