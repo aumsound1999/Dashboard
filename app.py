@@ -178,9 +178,10 @@ def parse_campaign_details(campaign_string: str):
 
 @st.cache_data(ttl=600, show_spinner="Fetching latest data...")
 def fetch_csv_text():
-    url = st.secrets.get("ROAS_CSV_URL", "")
+    # --- CORRECTED: Read from os.environ for Hugging Face ---
+    url = os.environ.get("ROAS_CSV_URL", "") # Read from environment variable
     if not url:
-        raise RuntimeError("Missing Secrets: ROAS_CSV_URL is not set.")
+        raise RuntimeError("Missing Secrets: ROAS_CSV_URL is not set in Hugging Face secrets.")
     r = requests.get(url, timeout=45)
     r.raise_for_status()
     return r.text
@@ -689,8 +690,8 @@ def main():
                             'roas': np.nan,
                             'SaleRO (Day)': sale_ro_day_val,
                             'AdsRO (Day)': ads_ro_day_val,
-                            'sale_day': sale_day_val,
                             'saleads_day': saleads_day_val,
+                            'sale_day': sale_day_val,
                             'salelast_day': last_sale_day_val,
                             'rank_sale': str(channel_rank),
                             'rank_last_sale': str(channel_last_rank),
@@ -713,8 +714,8 @@ def main():
                                 'roas': campaign.get('roas'),
                                 'SaleRO (Day)': sale_ro_day_val if is_first_row_for_channel else np.nan,
                                 'AdsRO (Day)': ads_ro_day_val if is_first_row_for_channel else np.nan,
-                                'sale_day': sale_day_val if is_first_row_for_channel else np.nan,
                                 'saleads_day': saleads_day_val if is_first_row_for_channel else np.nan,
+                                'sale_day': sale_day_val if is_first_row_for_channel else np.nan,
                                 'salelast_day': last_sale_day_val if is_first_row_for_channel else np.nan,
                                 'rank_sale': str(channel_rank) if is_first_row_for_channel else '',
                                 'rank_last_sale': str(channel_last_rank) if is_first_row_for_channel else '',
@@ -1001,4 +1002,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
