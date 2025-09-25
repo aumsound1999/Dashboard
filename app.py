@@ -377,22 +377,14 @@ def build_channel_hourly_table(df: pd.DataFrame, tz="Asia/Bangkok"):
     table_df = pd.DataFrame()
     table_df['Time'] = H['hstr']
     
-    # คำนวณค่ารายชั่วโมง
-    sales_h = H.groupby('channel')['sales'].transform(diff_func).fillna(0)
-    orders_h = H.groupby('channel')['orders'].transform(diff_func).fillna(0)
-    ads_h = H.groupby('channel')['ads'].transform(diff_func).fillna(0)
-    view_h = H.groupby('channel')['view'].transform(diff_func).fillna(0)
+    # คำนวณค่ารายชั่วโมงสำหรับ Sales, Orders, Ads, View
+    table_df['Sales'] = H.groupby('channel')['sales'].transform(diff_func).fillna(0)
+    table_df['Orders'] = H.groupby('channel')['orders'].transform(diff_func).fillna(0)
+    table_df['Budget (Ads)'] = H.groupby('channel')['ads'].transform(diff_func).fillna(0)
+    table_df['Sale Ads'] = H.groupby('channel')['view'].transform(diff_func).fillna(0)
 
-    table_df['Sales'] = sales_h
-    table_df['Orders'] = orders_h
-    table_df['Ads Budget'] = ads_h
-    table_df['Ads View'] = view_h
-
-    # คำนวณ SaleRO รายชั่วโมง
-    ro = sales_h / ads_h.replace(0, np.nan)
-    table_df['SaleRO'] = ro.replace([np.inf, -np.inf], np.nan).fillna(0)
-
-    # 'misc' คือค่า Ad Credits ซึ่งเป็นค่าสะสม ไม่ใช่ผลต่างรายชั่วโมง
+    # ใช้ค่า snapshot (ค่า ณ เวลานั้น) สำหรับ ROAS และ Ad Credits
+    table_df['ROAS'] = H['ads_ro_raw']
     table_df['Ad Credits'] = H['misc']
 
     # เรียงข้อมูลจากใหม่ไปเก่าเพื่อการแสดงผล
@@ -870,9 +862,9 @@ def main():
             formatters = {
                 'Sales': '{:,.0f}',
                 'Orders': '{:,.0f}',
-                'Ads Budget': '{:,.0f}',
-                'Ads View': '{:,.0f}',
-                'SaleRO': '{:.2f}',
+                'Budget (Ads)': '{:,.0f}',
+                'Sale Ads': '{:,.0f}',
+                'ROAS': '{:.2f}',
                 'Ad Credits': '{:,.0f}'
             }
             st.dataframe(
@@ -1036,4 +1028,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
