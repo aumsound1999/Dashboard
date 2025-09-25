@@ -375,7 +375,7 @@ def build_channel_hourly_table(df: pd.DataFrame, tz="Asia/Bangkok"):
     
     # สร้าง DataFrame ใหม่สำหรับตาราง
     table_df = pd.DataFrame()
-    table_df['Time'] = H['hstr']
+    table_df['Time'] = H['hour_key'].dt.strftime("D%d %H:%M")
     
     # คำนวณค่ารายชั่วโมงสำหรับ Sales, Orders, Ads, View
     table_df['Sales'] = H.groupby('channel')['sales'].transform(diff_func).fillna(0)
@@ -1028,5 +1028,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
